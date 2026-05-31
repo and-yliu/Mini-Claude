@@ -76,8 +76,7 @@ class TodoManager:
                 line += f" ({item.active_form})"
             lines.append(line)
 
-            completed = sum(1 for item in self.state.items if item.status == "completed")
-
+        completed = sum(1 for item in self.state.items if item.status == "completed")
         lines.append(f"\n({completed}/{len(self.state.items)} completed)")
         
         return "\n".join(lines)

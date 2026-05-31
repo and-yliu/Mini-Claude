@@ -11,7 +11,7 @@ from skill import SkillRegistry
 from pathlib import Path
 from hooks import trigger_hooks
 from context import AgentContext
-from memory import tool_result_budget, snip_compact, micro_compact, compact_history, CONTEXT_LIMIT, reactive_compact
+from memory import tool_result_budget, snip_compact, micro_compact, compact_history, CONTEXT_LIMIT, reactive_compact, estimate_size
 
 load_dotenv()
 
@@ -63,7 +63,7 @@ class LoopState:
 # ── Tool dispatch ─────────────────────────────────────────────────────────────
 
 
-def execute_tool_calls(response_content) -> list[dict]:
+def execute_tool_calls(response_content, messages: list) -> list[dict]:
     results = []
     used_todo = False
 
@@ -72,11 +72,10 @@ def execute_tool_calls(response_content) -> list[dict]:
             continue
 
         if block.name == "compact":
-            state.messages[:] = compact_history(state.messages, TRANSCRIPT_DIR)
+            messages[:] = reactive_compact(messages)
             results.append({"type": "tool_result", "tool_use_id": block.id,
                             "content": "[Compacted. Conversation history has been summarized.]"})
-            state.messages.append({"role": "user", "content": results})
-            break 
+            break
 
         # Trigger PreToolUse hooks (handles permissions and logging)
         blocked_reason = trigger_hooks("PreToolUse", block)
@@ -151,7 +150,7 @@ def run_subagent(prompt: str) -> str:
             if response.stop_reason != "tool_use":
                 return extract_text(response.content) or "(no summary)"
 
-            results = execute_tool_calls(response.content)
+            results = execute_tool_calls(response.content, sub_messages)
             sub_messages.append({"role": "user", "content": results})
 
         return (
@@ -192,7 +191,7 @@ def agent_loop(state: LoopState) -> None:
             trigger_hooks("Stop", state.messages)
             return
 
-        results = execute_tool_calls(response.content)
+        results = execute_tool_calls(response.content, state.messages)
         if not results:
             state.transition_reason = None
             trigger_hooks("Stop", state.messages)
