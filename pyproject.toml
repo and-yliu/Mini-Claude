@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "Mini-Claude"
+version = "0.0.1"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pydantic>=2.0",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+claude = "mini_claude.cli.main:main"
+claude-core = "mini_claude.core.app:run"
+claude-tui = "mini_claude.tui.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mini_claude"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.4",            # quick linter + import ordering
+    "mypy>=1.10",           # Static type check
+    "pytest>=8.0",          # Unit Test
+    "pytest-asyncio>=0.23", # Async unit test
+]
+
+[tool.ruff]
+src = ["src"]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["E501"]
+"scripts/**/*.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true                 
+mypy_path = "src"            
+explicit_package_bases = true 
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "integration: marks tests that call the real Anthropic API (require ANTHROPIC_API_KEY)",
+]

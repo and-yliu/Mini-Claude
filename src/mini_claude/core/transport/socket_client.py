@@ -6,7 +6,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from core.bus.envelope import JsonRpcRequest
+from mini_claude.core.bus.envelope import JsonRpcRequest
 
 type EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
 

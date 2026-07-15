@@ -1,5 +1,5 @@
-from core.bus.commands import Command, PingCommand, PongResult
-from core.bus.envelope import (
+from mini_claude.core.bus.commands import Command, PingCommand, PongResult
+from mini_claude.core.bus.envelope import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
     INVALID_REQUEST,
@@ -11,7 +11,7 @@ from core.bus.envelope import (
     JsonRpcSuccess,
     make_error,
 )
-from core.bus.events import (
+from mini_claude.core.bus.events import (
     CoreStartedEvent,
     Event,
     LlmModelSelectedEvent,
