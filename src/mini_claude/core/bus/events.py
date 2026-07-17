@@ -66,7 +66,7 @@ class ToolCallFailedEvent(BaseModel):
     tool_use_id: str
     tool_name: str
     # "runtime_error" | "timeout" | "schema_error" | "permission_denied" | "rate_limited"
-    error_class: str
+    error_type: str
     error_message: str
     elapsed_ms: int
     attempt: int = 1  # 1=first attempt, 2=first retry, 3=second retry
