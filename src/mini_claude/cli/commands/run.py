@@ -17,7 +17,8 @@ from mini_claude.core.bus.events import (
     ToolCallStartedEvent,
 )
 from pydantic import BaseModel
-from kama_claude.core.runner import AgentRunner
+from mini_claude.core.runner import AgentRunner
+
 
 class StdoutPrinter:
     def __init__(self) -> None:

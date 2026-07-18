@@ -22,7 +22,7 @@ class EventWriter:
         return self
 
     # close event file
-    async def __aexit__(self) -> EventWriter:
+    async def __aexit__(self, *args: object) -> EventWriter:
         if self._file is not None:
             self._file.close()
             self._file = None

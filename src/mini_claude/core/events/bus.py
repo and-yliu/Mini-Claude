@@ -15,4 +15,4 @@ class EventBus:
     
     async def publish(self, event: BaseModel):
         for handler in self._subscribers:
-            handler(event)
+            await handler(event)

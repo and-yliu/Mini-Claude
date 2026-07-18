@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from mini_claude.core.bus.events import RunFinishedEvent, RunStartedEvent
-from mini_claude.core.config import KamaConfig
+from mini_claude.core.config import ClaudeConfig
 from mini_claude.core.context import ExecutionContext
 from mini_claude.core.events.bus import EventBus, EventHandler
 from mini_claude.core.events.writer import EventWriter
@@ -23,7 +23,7 @@ class AgentRunner:
     # assemble all dependency, to execute a full agent run
     def __init__(
         self,
-        config: KamaConfig,
+        config: ClaudeConfig,
         *,
         provider: LLMProvider | None = None,
         extra_handlers: list[EventHandler] | None = None,

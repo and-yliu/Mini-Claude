@@ -78,9 +78,9 @@ class AnthropicProvider:
             LlmUsageEvent(
                 run_id=run_id,
                 input_tokens=usage.input_tokens,
-                output_tokens=usage.output_token,
-                cache_creation_input_tokens=cache_read,
-                cache_creation_input_tokens = cache_create,
+                output_tokens=usage.output_tokens,
+                cache_read_input_tokens=cache_read,
+                cache_creation_input_tokens=cache_create,
                 ts=_now()
             )
         )
@@ -102,8 +102,8 @@ class AnthropicProvider:
             text="".join(text_parts),
             usage=UsageStats(
                 input_tokens=usage.input_tokens,
-                output_tokens=usage.output_token,
-                cache_creation_input_tokens=cache_read,
+                output_tokens=usage.output_tokens,
+                cache_read_input_tokens=cache_read,
                 cache_creation_input_tokens = cache_create
             )
         )
