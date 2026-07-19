@@ -25,23 +25,25 @@ class AgentRunner:
         self,
         config: ClaudeConfig,
         *,
+        bus: EventBus | None = None,
         provider: LLMProvider | None = None,
         extra_handlers: list[EventHandler] | None = None,
         runs_dir: Path | None = None,
     ) -> None:
         self._config = config
+        self._bus = bus
         self._provider = provider
         self._extra_handlers: list[EventHandler] = extra_handlers or []
         self._runs_dir = runs_dir or RUNS_DIR
     
     # create a complete agent run: generate run_id、connect eventbus、drive AgentLoop
-    async def run(self, goal: str):
-        # create an unique run id and directory
-        run_id = new_run_id()
+    async def run(self, goal: str, run_id: str | None = None):
+        # create run directory
+        run_id = run_id or new_run_id()
         run_path = ensure_run_dir(run_id)
 
         # create eventBus and subscribe all listener
-        bus = EventBus()
+        bus = self._bus or EventBus()
         for h in self._extra_handlers:
             bus.subscribe(h)
 

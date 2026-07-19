@@ -12,20 +12,26 @@ from pydantic import BaseModel, ValidationError
 
 from mini_claude.core.bus.envelope import (
     INTERNAL_ERROR,
+    INVALID_PARAMS,
     INVALID_REQUEST,
     METHOD_NOT_FOUND,
     PARSE_ERROR,
     HandlerError,
-    JsonRpcError,
     JsonRpcRequest,
     JsonRpcSuccess,
     make_error,
 )
+from mini_claude.core.transport.ipc_broadcaster import IpcEventBroadcaster
 
 logger = logging.getLogger(__name__)
 
 type CommandHandler = Callable[[dict[str, Any]], Awaitable[Any]]
 
+# The current writer for each connection-handling coroutine, allowing handlers to access the connection context.
+_writer_var: ContextVar[asyncio.StreamWriter] = ContextVar("_writer_var")
+
+def get_connection_writer():
+    return _writer_var.get()
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -39,11 +45,13 @@ class SocketServer:
         self,
         host: str,
         port: int,
+        broadcaster: IpcEventBroadcaster | None = None
     ) -> None:
         self._host = host
         self._port = port
         self._handlers: dict[str, CommandHandler] = {}
-        self._server: asyncio.AbstractServer | None = None
+        self._server: asyncio.AbstractServer
+        self._broadcaster = broadcaster 
 
     # Register a command handler by method name
     def register(self, method: str, handler: CommandHandler) -> None:
@@ -88,6 +96,8 @@ class SocketServer:
         try:
             await self._read_loop(reader, writer)
         finally:
+            if self._broadcaster is not None:
+                self._broadcaster.unsubscribe(writer)
             writer.close()
             try:
                 await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
@@ -138,6 +148,7 @@ class SocketServer:
             )
             return
 
+        _writer_var.set(writer)
         try:
             result = await handler(req.params)
         except HandlerError as e:
@@ -145,8 +156,7 @@ class SocketServer:
             return
         except ValidationError as e:
             await self._send(
-                writer,
-                make_error(req.id, INVALID_REQUEST, "Invalid params", str(e)),
+                writer, make_error(req.id, INVALID_PARAMS, "Invalid params", str(e))
             )
             return
         except Exception as e:
