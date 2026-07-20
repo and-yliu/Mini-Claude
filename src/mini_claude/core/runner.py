@@ -15,6 +15,8 @@ from mini_claude.core.loop import AgentLoop
 from mini_claude.core.runs import RUNS_DIR, new_run_id, ensure_run_dir
 from mini_claude.core.tools.builtin.read_file import ReadFileTool
 from mini_claude.core.tools.registry import ToolRegistry
+from mini_claude.core.trace.writer import TraceWriter, TraceRecord
+from mini_claude.core.trace.provider import TracingProvder
 
 def _now(): 
     return datetime.now(UTC).isoformat()
@@ -29,12 +31,14 @@ class AgentRunner:
         provider: LLMProvider | None = None,
         extra_handlers: list[EventHandler] | None = None,
         runs_dir: Path | None = None,
+        trace: TraceWriter | None = None
     ) -> None:
         self._config = config
         self._bus = bus
         self._provider = provider
         self._extra_handlers: list[EventHandler] = extra_handlers or []
         self._runs_dir = runs_dir or RUNS_DIR
+        self._trace = trace
     
     # create a complete agent run: generate run_id、connect eventbus、drive AgentLoop
     async def run(self, goal: str, run_id: str | None = None):
@@ -47,12 +51,6 @@ class AgentRunner:
         for h in self._extra_handlers:
             bus.subscribe(h)
 
-        # get llm provider, tool and agent loop
-        provider = self._provider or AnthropicProvider(self._config.llm.default_model)
-        registry = ToolRegistry()
-        registry.register(ReadFileTool())
-        loop = AgentLoop(provider, registry, bus)
-
         # create working memory
         context = ExecutionContext(
             run_id=run_id,
@@ -64,6 +62,20 @@ class AgentRunner:
         async with EventWriter(run_path / "events.jsonl") as writer:
             writer.subscribe(bus)
             await bus.publish(RunStartedEvent(run_id=run_id, goal=goal, ts=_now()))
+
+            # get llm provider, tool and agent loop
+            provider = self._provider or AnthropicProvider(self._config.llm.default_model)
+            registry = ToolRegistry()
+            registry.register(ReadFileTool())
+
+            if self._trace:
+                provider = TracingProvder(
+                    provider,
+                    self._trace,
+                    include_payload=self._config.trace.include_llm_payload
+                )
+            
+            loop = AgentLoop(provider, registry, bus)
 
             cancelled = False
             try:

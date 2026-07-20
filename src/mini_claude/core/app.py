@@ -7,7 +7,9 @@ import json
 import logging
 import signal
 import time
+from pathlib import Path
 from typing import Any
+from pydantic import BaseModel
 
 import mini_claude
 from mini_claude.core.bus.commands import (
@@ -25,6 +27,7 @@ from mini_claude.core.runner import AgentRunner
 from mini_claude.core.runs import events_file, new_run_id
 from mini_claude.core.transport.ipc_broadcaster import IpcEventBroadcaster
 from mini_claude.core.transport.socket_server import SocketServer, get_connection_writer
+from mini_claude.core.trace.writer import TraceRecord, TraceWriter
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +41,9 @@ class CoreApp:
         self._start_time = time.monotonic()
         self._bus = EventBus()
         self._broadcaster = IpcEventBroadcaster()
-        self._bus.subscribe(self._broadcaster.handle)
         self._current_run_task: asyncio.Task[None] | None = None
         self._config: ClaudeConfig | None = None
+        self._trace: TraceWriter | None = None
 
     async def _ping_handler(self, params: dict[str, Any]) -> EventSubscribeResult:
         client = params.get("client", "unknown")
@@ -70,10 +73,24 @@ class CoreApp:
             raise RuntimeError("a run is already in progress")
 
         run_id = new_run_id()
-        runner = AgentRunner(self._config, bus=self._bus)
+        runner = AgentRunner(self._config, bus=self._bus, trace=self._trace)
         self._current_run_task = asyncio.create_task(runner.run(command.goal, run_id))
 
         return AgentRunResult(run_id=run_id)
+    
+    async def _trace_event_handler(self, event: BaseModel) -> None:
+        assert self._trace is not None
+        event_dict = event.model_dump()
+        self._trace.emit(
+            TraceRecord(
+                ts=_now(),
+                direction="CORE→CLIENT",
+                layer="event",
+                kind="event",
+                run_id=event_dict.get("run_id"),
+                data=event_dict
+            )
+        )
 
     async def _replay_event(self, run_id: str, writer: asyncio.StreamWriter, topics: list[str]) -> int:
         path = events_file(run_id)
@@ -109,14 +126,26 @@ class CoreApp:
         self._config = get_config()
         setup_logging(self._config)
 
+        if self._config.trace.enable:
+            trace_path = Path(self._config.trace.file).expanduser()
+            self._trace = TraceWriter(trace_path)
+            await self._trace.start()
+            self._bus.subscribe(self._trace_event_handler)
+
+        self._broadcaster = IpcEventBroadcaster(trace=self._trace)
+        self._bus.subscribe(self._broadcaster.handle)
+
         server = SocketServer(
             self._config.host,
             self._config.port,
             broadcaster=self._broadcaster,
+            trace=self._trace
         )
+
         server.register("core.ping", self._ping_handler)
         server.register("agent.run", self._agent_run_handler)
         server.register("event.subscribe", self._subscribe_handler)
+
 
         addr = await server.start()
         logger.info("claude-core %s listening addr=%s", mini_claude.__version__, addr)
@@ -131,6 +160,8 @@ class CoreApp:
 
         logger.info("shutting down")
         await server.stop()
+        if self._trace:
+            self._trace.stop()
 
 
 def run() -> None:

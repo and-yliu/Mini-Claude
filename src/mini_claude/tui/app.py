@@ -94,6 +94,7 @@ class MiniClaudeTuiApp(App[None]):
 
         if t == "llm.token":
             self._token_buf += event.get("token", "")
+            return
         
         self._flush_tokens(log)
 

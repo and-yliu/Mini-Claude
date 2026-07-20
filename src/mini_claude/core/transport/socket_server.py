@@ -17,11 +17,14 @@ from mini_claude.core.bus.envelope import (
     METHOD_NOT_FOUND,
     PARSE_ERROR,
     HandlerError,
+    JsonRpcError,
     JsonRpcRequest,
     JsonRpcSuccess,
     make_error,
 )
 from mini_claude.core.transport.ipc_broadcaster import IpcEventBroadcaster
+from mini_claude.core.trace.writer import TraceWriter
+from mini_claude.core.trace.record import TraceRecord
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +48,15 @@ class SocketServer:
         self,
         host: str,
         port: int,
-        broadcaster: IpcEventBroadcaster | None = None
+        broadcaster: IpcEventBroadcaster | None = None,
+        trace: TraceWriter | None = None
     ) -> None:
         self._host = host
         self._port = port
         self._handlers: dict[str, CommandHandler] = {}
         self._server: asyncio.AbstractServer
         self._broadcaster = broadcaster 
+        self._trace = trace
 
     # Register a command handler by method name
     def register(self, method: str, handler: CommandHandler) -> None:
@@ -139,6 +144,19 @@ class SocketServer:
             await self._send(writer, make_error(None, INVALID_REQUEST, "Invalid Request", str(e)))
             return
 
+        if self._trace is not None:
+            client_id = str(writer.get_extra_info("peername", "<unknown>"))
+            self._trace.emit(
+                TraceRecord(
+                    ts=_now(),
+                    direction='CLIENT→CORE',
+                    layer="ipc",
+                    kind="command",
+                    client_id=client_id,
+                    data={"method": req.method, "id": req.id, "params": req.params}
+                )
+            )
+
 
         handler = self._handlers.get(req.method)
         if handler is None:
@@ -174,3 +192,17 @@ class SocketServer:
     async def _send(self, writer: asyncio.StreamWriter, msg: BaseModel) -> None:
         writer.write(msg.model_dump_json().encode() + b"\n")
         await writer.drain()
+        if self._trace is not None:
+            client_id = str(writer.get_extra_info("peername", "<unknown>"))
+            kind = "error" if isinstance(msg, JsonRpcError) else "response"
+            self._trace.emit(
+                TraceRecord(
+                    ts=_now(),
+                    direction="CORE→CLIENT",
+                    layer="ipc",
+                    kind=kind,
+                    client_id=client_id,
+                    data=msg.model_dump()
+                )
+            )
+

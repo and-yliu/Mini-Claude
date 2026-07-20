@@ -16,6 +16,7 @@ _DEFAULT_LOG_FORMAT = "text"
 _DEFAULT_CONFIG_PATH = "~/.mini/config.toml"
 _DEFAULT_MAX_STEPS = 20
 _DEFAULT_MODEL = "claude-sonnet-4-6"
+_DEFAULT_TRACE_FILE = "~/.mini/traces/daemon.jsonl"
 
 
 @dataclass
@@ -35,6 +36,12 @@ class LlmConfig:
     default_model: str = _DEFAULT_MODEL
     router: str = "static"  # "static" | "rule_based" (S4) | "cost_budget" (S6)
 
+@dataclass
+class TraceConfig:
+    enable: bool = True
+    file: str = _DEFAULT_TRACE_FILE
+    include_llm_payload: bool = True
+
 
 @dataclass
 class ClaudeConfig:
@@ -43,6 +50,7 @@ class ClaudeConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     llm: LlmConfig = field(default_factory=LlmConfig)
+    trace: TraceConfig = field(default_factory=TraceConfig)
 
 def get_config() -> ClaudeConfig:
     config = ClaudeConfig()
@@ -63,7 +71,7 @@ def get_config() -> ClaudeConfig:
     return config
 
 def _apply_toml(config: ClaudeConfig, data: dict[str, Any]):
-    unknown = set(data.keys()) - {"core", "logging"}
+    unknown = set(data.keys()) - {"core", "logging", "agent", "llm", "trace"}
     if unknown:
         raise SystemExit(f"Unknown top-level config keys: {', '.join(sorted(unknown))}")
     
@@ -129,6 +137,29 @@ def _apply_toml(config: ClaudeConfig, data: dict[str, Any]):
             if not isinstance(val, str):
                 raise SystemExit("Config error: llm.router must be a string")
             config.llm.router = val
+    
+    if "trace" in data:
+        trace = data["trace"]
+        if not isinstance(trace, dict):
+            raise SystemExit("Config error: [trace] must be a table")
+        unknown_trace: set[str] = set(trace.keys()) - {"enabled", "file", "include_llm_payload"}
+        if unknown_trace:
+            raise SystemExit(f"Unknown [trace] keys: {', '.join(sorted(unknown_trace))}")
+        if "enabled" in trace:
+            val = trace["enabled"]
+            if not isinstance(val, bool):
+                raise SystemExit("Config error: trace.enabled must be a boolean")
+            config.trace.enabled = val
+        if "file" in trace:
+            val = trace["file"]
+            if not isinstance(val, str):
+                raise SystemExit("Config error: trace.file must be a string")
+            config.trace.file = val
+        if "include_llm_payload" in trace:
+            val = trace["include_llm_payload"]
+            if not isinstance(val, bool):
+                raise SystemExit("Config error: trace.include_llm_payload must be a boolean")
+            config.trace.include_llm_payload = val
 
 
 # Use CLAUDE_* env variable to cover variable in config
@@ -174,3 +205,15 @@ def _apply_env(config: ClaudeConfig) -> None:
     default_model = os.environ.get("CLAUDE_LLM_DEFAULT_MODEL")
     if default_model is not None:
         config.llm.default_model = default_model
+    
+    trace_enabled = os.environ.get("CLAUDE_TRACE_ENABLED")
+    if trace_enabled is not None:
+        config.trace.enabled = trace_enabled.lower() not in ("0", "false", "no")
+
+    trace_file = os.environ.get("CLAUDE_TRACE_FILE")
+    if trace_file is not None:
+        config.trace.file = trace_file
+
+    trace_payload = os.environ.get("CLAUDE_TRACE_INCLUDE_LLM_PAYLOAD")
+    if trace_payload is not None:
+        config.trace.include_llm_payload = trace_payload.lower() not in ("0", "false", "no")
