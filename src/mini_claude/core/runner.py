@@ -13,10 +13,20 @@ from mini_claude.core.llm.base import LLMProvider
 from mini_claude.core.llm.provider import AnthropicProvider
 from mini_claude.core.loop import AgentLoop
 from mini_claude.core.runs import RUNS_DIR, new_run_id, ensure_run_dir
-from mini_claude.core.tools.builtin.read_file import ReadFileTool
+from mini_claude.core.tools.builtin import (
+    BashTool,
+    ListDirTool,
+    ReadFileTool,
+    TaskCreateTool,
+    TaskGetTool,
+    TaskListTool,
+    TaskUpdateTool,
+    WriteFileTool,
+)
 from mini_claude.core.tools.registry import ToolRegistry
 from mini_claude.core.trace.writer import TraceWriter, TraceRecord
 from mini_claude.core.trace.provider import TracingProvder
+from mini_claude.core.task.manager import TaskManager
 
 def _now(): 
     return datetime.now(UTC).isoformat()
@@ -40,11 +50,26 @@ class AgentRunner:
         self._runs_dir = runs_dir or RUNS_DIR
         self._trace = trace
     
+    def _build_registry(self, task_manager: TaskManager) -> ToolRegistry:
+        registry = ToolRegistry()
+        registry.register(ReadFileTool())
+        registry.register(BashTool())
+        registry.register(WriteFileTool())
+        registry.register(ListDirTool())
+        registry.register(TaskCreateTool(task_manager))
+        registry.register(TaskUpdateTool(task_manager))
+        registry.register(TaskListTool(task_manager))
+        registry.register(TaskGetTool(task_manager))
+        return registry
+
+    
     # create a complete agent run: generate run_id、connect eventbus、drive AgentLoop
     async def run(self, goal: str, run_id: str | None = None):
         # create run directory
         run_id = run_id or new_run_id()
         run_path = ensure_run_dir(run_id)
+
+        task_manager = TaskManager(run_path / ".task")
 
         # create eventBus and subscribe all listener
         bus = self._bus or EventBus()
@@ -65,8 +90,7 @@ class AgentRunner:
 
             # get llm provider, tool and agent loop
             provider = self._provider or AnthropicProvider(self._config.llm.default_model)
-            registry = ToolRegistry()
-            registry.register(ReadFileTool())
+            registry = self._build_registry(task_manager)
 
             if self._trace:
                 provider = TracingProvder(
