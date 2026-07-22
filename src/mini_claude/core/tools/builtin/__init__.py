@@ -6,6 +6,7 @@ from mini_claude.core.tools.builtin.task_get import TaskGetTool
 from mini_claude.core.tools.builtin.task_list import TaskListTool
 from mini_claude.core.tools.builtin.task_update import TaskUpdateTool
 from mini_claude.core.tools.builtin.write_file import WriteFileTool
+from mini_claude.core.tools.builtin.note_save import NoteSaveTool
 
 __all__ = [
     "BashTool",
@@ -16,4 +17,5 @@ __all__ = [
     "TaskListTool",
     "TaskUpdateTool",
     "WriteFileTool",
+    "NoteSaveTool"
 ]

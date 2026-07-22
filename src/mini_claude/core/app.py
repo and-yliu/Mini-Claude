@@ -18,6 +18,14 @@ from mini_claude.core.bus.commands import (
     EventSubscribeCommand,
     EventSubscribeResult,
     PongResult,
+    SessionCreateCommand,
+    SessionCreateResult,
+    SessionCloseCommand,
+    SessionCloseResult,
+    SessionSendMessageCommand,
+    SessionSendMessageResult,
+    SessionGetHistoryCommand,
+    SessionGetHistoryResult
 )
 from mini_claude.core.bus.envelope import EventPushEnvelope
 from mini_claude.core.config import ClaudeConfig, get_config
@@ -28,7 +36,7 @@ from mini_claude.core.runs import events_file, new_run_id
 from mini_claude.core.transport.ipc_broadcaster import IpcEventBroadcaster
 from mini_claude.core.transport.socket_server import SocketServer, get_connection_writer
 from mini_claude.core.trace.writer import TraceRecord, TraceWriter
-
+from mini_claude.core.session.manager import SessionManager, SessionStore, Session
 logger = logging.getLogger(__name__)
 
 
@@ -41,9 +49,10 @@ class CoreApp:
         self._start_time = time.monotonic()
         self._bus = EventBus()
         self._broadcaster = IpcEventBroadcaster()
-        self._current_run_task: asyncio.Task[None] | None = None
+        self._running_runs: set[asyncio.Task[Any]] = set()
         self._config: ClaudeConfig | None = None
         self._trace: TraceWriter | None = None
+        self._sessions: SessionManager | None = None
 
     async def _ping_handler(self, params: dict[str, Any]) -> EventSubscribeResult:
         client = params.get("client", "unknown")
@@ -65,16 +74,42 @@ class CoreApp:
         sub_id = self._broadcaster.subscribe(writer, command.topics, command.scope)
         return EventSubscribeResult(subscription_id=sub_id, replayed_count=replay_count)
 
+    async def _session_create_handler(self, params: dict[str, Any]) -> SessionCreateResult:
+        assert self._sessions is not None
+        command = SessionCreateCommand.model_validate(params)
+
+        session: Session = await self._sessions.create(command.mode, command.title)
+
+        return SessionCreateResult(session_id=session.id, status=session.status)
+    
+    async def _session_message_handler(self, params: dict[str, Any]) -> SessionSendMessageResult:
+        assert self._sessions is not None
+        command = SessionSendMessageCommand.model_validate(params)
+        run_id = await self._sessions.send_message(sid=command.session_id, content=command.content)
+        return SessionSendMessageResult(run_id=run_id)
+
+    async def _session_history_handler(self, params: dict[str, Any]) -> SessionGetHistoryResult:
+        assert self._sessions is not None
+        command = SessionGetHistoryCommand.model_validate(params)
+        history = await self._sessions.list_history(command.session_id)
+        return SessionGetHistoryResult(messages=history)
+    
+    async def _session_close_handler(self, params: dict[str, Any]) -> SessionCloseResult:
+        assert self._sessions is not None
+        command = SessionCloseCommand.model_validate(params)
+        await self._sessions.close(sid=command.session_id)
+        return SessionCloseResult(status="closed")
+
     async def _agent_run_handler(self, params: dict[str, Any]) -> AgentRunResult:
         assert self._config is not None
         command = AgentRunCommand.model_validate(params)
 
-        if self._current_run_task and not self._current_run_task.done():
-            raise RuntimeError("a run is already in progress")
+        session = await self._sessions.create("one_shot", command.goal[:40])
 
         run_id = new_run_id()
-        runner = AgentRunner(self._config, bus=self._bus, trace=self._trace)
-        self._current_run_task = asyncio.create_task(runner.run(command.goal, run_id))
+        run_task = asyncio.create_task(self._sessions.send_message(session.id, session.title, run_id=run_id))
+        self._running_runs.add(run_task)
+        run_task.add_done_callback(self._running_runs.discard)
 
         return AgentRunResult(run_id=run_id)
     
@@ -126,6 +161,7 @@ class CoreApp:
         self._config = get_config()
         setup_logging(self._config)
 
+
         if self._config.trace.enable:
             trace_path = Path(self._config.trace.file).expanduser()
             self._trace = TraceWriter(trace_path)
@@ -134,6 +170,13 @@ class CoreApp:
 
         self._broadcaster = IpcEventBroadcaster(trace=self._trace)
         self._bus.subscribe(self._broadcaster.handle)
+        sessions_root = Path("~/.mini/sessions").expanduser()
+        store = SessionStore(sessions_root)
+        self._sessions = SessionManager(
+            store, 
+            runner_factory= lambda: AgentRunner(self._config, bus=self._bus, trace=self._trace),
+            bus=self._bus
+        )
 
         server = SocketServer(
             self._config.host,
@@ -145,6 +188,10 @@ class CoreApp:
         server.register("core.ping", self._ping_handler)
         server.register("agent.run", self._agent_run_handler)
         server.register("event.subscribe", self._subscribe_handler)
+        server.register("session.create", self._session_create_handler)
+        server.register("session.send_message", self._session_message_handler)
+        server.register("session.get_history", self._session_history_handler)
+        server.register("session.close", self._session_close_handler)
 
 
         addr = await server.start()
@@ -159,9 +206,13 @@ class CoreApp:
         await shutdown.wait()
 
         logger.info("shutting down")
+        for run_task in list(self._running_runs):
+            run_task.cancel()
+        if self._running_runs:
+            await asyncio.gather(*self._running_runs, return_exceptions=True)
         await server.stop()
         if self._trace:
-            self._trace.stop()
+            await self._trace.stop()
 
 
 def run() -> None:

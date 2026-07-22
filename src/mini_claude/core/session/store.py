@@ -104,8 +104,7 @@ class SessionStore:
             messages.append({"role": role, "content": row.get("content", "")})
 
         messages = self._trim_orphan_tool_use(messages)
-        from mini_claude.core.compact.budget import truncate_tool_results
-        return truncate_tool_results(messages)
+        return messages
 
     # Trim orphan tool_use blocks from thread to avoid Anthropic messages.invalid
     def _trim_orphan_tool_use(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

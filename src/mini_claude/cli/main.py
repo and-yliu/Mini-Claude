@@ -4,6 +4,7 @@ import argparse
 import sys
 
 from mini_claude.cli.commands.ping import cmd_ping
+from mini_claude.cli.commands.chat import cmd_chat
 from mini_claude.cli.commands.run import cmd_run
 from mini_claude.cli.commands.version import cmd_version
 from mini_claude.cli.commands.trace import cmd_trace
@@ -16,6 +17,7 @@ def main() -> None:
     parser.add_argument("--version", action="store_true", help="Print version and exit")
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser(name="ping", help="Ping the core daemon")
+    subparsers.add_parser(name="chat", help="Start a multi-turn chat session")
 
     run_parser = subparsers.add_parser(name="run", help="Run an agent task")
     run_parser.add_argument("--goal", required=True, help="Goal for the agent to accomplish")
@@ -38,6 +40,8 @@ def main() -> None:
 
     if args.command == "ping":
         cmd_ping(config)
+    elif args.command == "chat":
+        cmd_chat(config)
     elif args.command == "run":
         cmd_run(args.goal, config)
     elif args.command == "trace":

@@ -29,6 +29,7 @@ class TracingProvder:
         run_id: str,
         *,
         step: int = 0,
+        system: str | None = None
     ) -> LlmResponse:
         
         call_data: dict[str, Any]
@@ -53,7 +54,7 @@ class TracingProvder:
         )
 
         t0 = time.monotonic()
-        result = await self._inner.chat(messages, tool_schemas, bus, run_id, step=step)
+        result = await self._inner.chat(messages, tool_schemas, bus, run_id, step=step, system=system)
         latency_ms = ((time.monotonic() - t0) * 1000)
 
         resp_data: dict[str, Any]

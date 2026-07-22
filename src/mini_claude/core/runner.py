@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -22,14 +23,22 @@ from mini_claude.core.tools.builtin import (
     TaskListTool,
     TaskUpdateTool,
     WriteFileTool,
+    NoteSaveTool
 )
 from mini_claude.core.tools.registry import ToolRegistry
 from mini_claude.core.trace.writer import TraceWriter, TraceRecord
 from mini_claude.core.trace.provider import TracingProvder
 from mini_claude.core.task.manager import TaskManager
+from mini_claude.core.session.manager import Session, SessionStore
 
 def _now(): 
     return datetime.now(UTC).isoformat()
+
+@dataclass
+class RunOutcome:
+    status: str
+    result: str
+    reason: str | None
 
 class AgentRunner:
     # assemble all dependency, to execute a full agent run
@@ -50,7 +59,14 @@ class AgentRunner:
         self._runs_dir = runs_dir or RUNS_DIR
         self._trace = trace
     
-    def _build_registry(self, task_manager: TaskManager) -> ToolRegistry:
+    def _build_registry(
+        self, 
+        task_manager: TaskManager, 
+        *,
+        store: SessionStore | None = None, 
+        session: Session | None = None, 
+        run_id: str | None = None
+    ) -> ToolRegistry:
         registry = ToolRegistry()
         registry.register(ReadFileTool())
         registry.register(BashTool())
@@ -60,14 +76,34 @@ class AgentRunner:
         registry.register(TaskUpdateTool(task_manager))
         registry.register(TaskListTool(task_manager))
         registry.register(TaskGetTool(task_manager))
+        if session is not None and store is not None and run_id is not None:
+            registry.register(NoteSaveTool(store, session.id, run_id))
         return registry
+    
+    async def run(self, goal: str, run_id: str | None = None) -> None:
+        await self.run_and_capture(goal, run_id=run_id)
 
     
     # create a complete agent run: generate run_id、connect eventbus、drive AgentLoop
-    async def run(self, goal: str, run_id: str | None = None):
+    async def run_and_capture(
+        self, 
+        goal: str, 
+        *,
+        run_id: str | None = None, 
+        session: Session | None = None, 
+        store: SessionStore | None = None 
+    ) -> RunOutcome:
         # create run directory
         run_id = run_id or new_run_id()
-        run_path = ensure_run_dir(run_id)
+        if session is not None and store is not None:
+            run_path = store.runs_dir(session.id)
+            history = store.read_messages(session.id)
+            notes = store.read_notes(session.id)
+        else:
+            run_path = self._runs_dir
+            history = [{"role": "user", "content": goal}]
+            notes = ""
+        run_path.mkdir(parents=True, exist_ok=True)
 
         task_manager = TaskManager(run_path / ".task")
 
@@ -80,6 +116,8 @@ class AgentRunner:
         context = ExecutionContext(
             run_id=run_id,
             goal=goal,
+            prefill_messages=history,
+            session_notes=notes,
             max_steps=self._config.agent.max_steps,
         )
 
@@ -90,24 +128,26 @@ class AgentRunner:
 
             # get llm provider, tool and agent loop
             provider = self._provider or AnthropicProvider(self._config.llm.default_model)
-            registry = self._build_registry(task_manager)
-
-            if self._trace:
-                provider = TracingProvder(
-                    provider,
-                    self._trace,
-                    include_payload=self._config.trace.include_llm_payload
-                )
-            
-            loop = AgentLoop(provider, registry, bus)
+            registry = self._build_registry(task_manager, store=store, session=session, run_id=run_id)
 
             cancelled = False
             try:
+                if self._trace:
+                    provider = TracingProvder(
+                        provider,
+                        self._trace,
+                        include_payload=self._config.trace.include_llm_payload
+                    )
+                
+                loop = AgentLoop(provider, registry, bus)
                 await loop.run(context)
             except asyncio.CancelledError:
                 cancelled = True
                 if not context.is_done():
                     context.mark_failed("cancelled")
+            except Exception:
+                if not context.is_done():
+                    context.mark_failed("llm-error")
 
             await bus.publish(
                 RunFinishedEvent(

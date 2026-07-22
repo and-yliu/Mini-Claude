@@ -9,19 +9,34 @@ class ExecutionContext:
     run_id: str
     goal: str
     max_steps: int
+    prefill_messages: list[dict[str, Any]] = field(default_factory=list)
+    session_notes: str = ""
     messages: list[dict[str, Any]] = field(default_factory=list)
     step: int = 0
     status: str = "running"  # "running" | "success" | "failed"
     reason: str | None = None
+    result: str = ""
 
     # add goal as first message
     def __post_init__(self) -> None:
+        if self.prefill_messages:
+            self.messages = [dict(m) for m in self.prefill_messages]
         if not self.messages:
             self.messages.append({"role": "user", "content": self.goal})
 
     # append llm answer
     def add_assistant_message(self, content: list[Any]) -> None:
         self.messages.append({"role": "assistant", "content": content})
+    
+    def system_prompt(self, base: str) -> str:
+        if not self.session_notes.strip():
+            return base
+        return (
+            base
+            + "\n\n## Session Notes\n"
+            + self.session_notes.strip()
+            + "\n\nRemember important durable facts by calling note_save."
+        )
 
     # add tool result to message as user message, bundle multiple tool results
     def add_tool_result(

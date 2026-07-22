@@ -41,7 +41,13 @@ class AgentLoop:
                     tool_schemas=self._registry.tool_schemas(),
                     bus=self._bus,
                     run_id=context.run_id,
-                    step=context.step
+                    step=context.step,
+                    system=context.system_prompt(
+                        "You are a helpful AI assistant. "
+                        "Use the available tools to complete the user's goal. "
+                        "When the goal is fully achieved, respond with a final answer "
+                        "and do not call any more tools."
+                    )
                 )
             except asyncio.CancelledError:
                 context.mark_failed("cancelled")
