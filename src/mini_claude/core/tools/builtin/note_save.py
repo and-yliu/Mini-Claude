@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from mini_claude.core.tools.base import BaseTool, ToolResult
 from mini_claude.core.session.manager import SessionStore
-
-_MAX_BYTES = 1 * 1024 * 1024  # 1 MB
 
 class NoteSaveTool(BaseTool):
     name = "note_save"
@@ -37,7 +33,7 @@ class NoteSaveTool(BaseTool):
                 is_error=True,
                 error_type="runtime_error"
             )
-        self._store.append_note(sid=self._session_id, run_id=self._run_id)
+        self._store.append_note(sid=self._session_id, content=content, run_id=self._run_id)
         return ToolResult(content=content)
 
     
