@@ -9,6 +9,7 @@ from mini_claude.core.events.bus import EventBus
 from mini_claude.core.llm.base import LLMProvider
 from mini_claude.core.tools.invocation import invoke_tool
 from mini_claude.core.tools.registry import ToolRegistry
+from mini_claude.core.permissions.manager import PermissionManager
 
 
 def _now() -> str:
@@ -20,11 +21,16 @@ class AgentLoop:
         self,
         provider: LLMProvider,
         registry: ToolRegistry,
-        bus: EventBus
+        bus: EventBus,
+        *,
+        permission_manager: PermissionManager | None = None,
+        session_id: str = ""
     ) -> None:
         self._provider = provider
         self._registry = registry
         self._bus = bus
+        self._permission_manager = permission_manager
+        self._session_id = session_id
     
     # plan -> act -> observer loop
     async def run(self, context: ExecutionContext) -> None:
@@ -70,7 +76,9 @@ class AgentLoop:
             if response.stop_reason == "tool_use":
                 for tc in response.tool_calls:
                     result = await invoke_tool(
-                        self._registry, tc, self._bus, context.run_id
+                        self._registry, tc, self._bus, context.run_id, 
+                        permission_manager=self._permission_manager,
+                        session_id=self._session_id
                     )
                     context.add_tool_result(tc.id, result.content, is_error=result.is_error)
 

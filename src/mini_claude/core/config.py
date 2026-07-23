@@ -42,6 +42,10 @@ class TraceConfig:
     file: str = _DEFAULT_TRACE_FILE
     include_llm_payload: bool = True
 
+@dataclass
+class PermissionConfig:
+    timeout_s: float = 60.0
+
 
 @dataclass
 class ClaudeConfig:
@@ -51,6 +55,7 @@ class ClaudeConfig:
     agent: AgentConfig = field(default_factory=AgentConfig)
     llm: LlmConfig = field(default_factory=LlmConfig)
     trace: TraceConfig = field(default_factory=TraceConfig)
+    permission: PermissionConfig = field(default_factory=PermissionConfig)
 
 def get_config() -> ClaudeConfig:
     config = ClaudeConfig()
@@ -161,6 +166,19 @@ def _apply_toml(config: ClaudeConfig, data: dict[str, Any]):
                 raise SystemExit("Config error: trace.include_llm_payload must be a boolean")
             config.trace.include_llm_payload = val
 
+    if "permission" in data:
+        perm = data["permission"]
+        if not isinstance(perm, dict):
+            raise SystemExit("Config error: [permission] must be a table")
+        unknown_perm: set[str] = set(perm.keys()) - {"timeout_s"}
+        if unknown_perm:
+            raise SystemExit(f"Unknown [permission] keys: {', '.join(sorted(unknown_perm))}")
+        if "timeout_s" in perm:
+            val = perm["timeout_s"]
+            if not isinstance(val, (int, float)) or val < 0:
+                raise SystemExit("Config error: permission.timeout_s must be a non-negative number")
+            config.permission.timeout_s = float(val)
+
 
 # Use CLAUDE_* env variable to cover variable in config
 def _apply_env(config: ClaudeConfig) -> None:
@@ -217,3 +235,17 @@ def _apply_env(config: ClaudeConfig) -> None:
     trace_payload = os.environ.get("CLAUDE_TRACE_INCLUDE_LLM_PAYLOAD")
     if trace_payload is not None:
         config.trace.include_llm_payload = trace_payload.lower() not in ("0", "false", "no")
+
+    perm_timeout = os.environ.get("CLAUDE_PERMISSION_TIMEOUT_S")
+    if perm_timeout is not None:
+        try:
+            val = float(perm_timeout)
+            if val < 0:
+                raise SystemExit(
+                    f"Config error: CLAUDE_PERMISSION_TIMEOUT_S must be >= 0, got: {perm_timeout!r}"
+                )
+            config.permission.timeout_s = val
+        except ValueError:
+            raise SystemExit(
+                f"Config error: CLAUDE_PERMISSION_TIMEOUT_S must be a number, got: {perm_timeout!r}"
+            )

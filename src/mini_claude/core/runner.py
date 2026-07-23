@@ -30,6 +30,7 @@ from mini_claude.core.trace.writer import TraceWriter, TraceRecord
 from mini_claude.core.trace.provider import TracingProvder
 from mini_claude.core.task.manager import TaskManager
 from mini_claude.core.session.manager import Session, SessionStore
+from mini_claude.core.permissions.manager import PermissionManager
 
 def _now(): 
     return datetime.now(UTC).isoformat()
@@ -50,7 +51,8 @@ class AgentRunner:
         provider: LLMProvider | None = None,
         extra_handlers: list[EventHandler] | None = None,
         runs_dir: Path | None = None,
-        trace: TraceWriter | None = None
+        trace: TraceWriter | None = None,
+        permission_manager: PermissionManager | None = None
     ) -> None:
         self._config = config
         self._bus = bus
@@ -58,6 +60,7 @@ class AgentRunner:
         self._extra_handlers: list[EventHandler] = extra_handlers or []
         self._runs_dir = runs_dir or RUNS_DIR
         self._trace = trace
+        self._permission_manager = permission_manager
     
     def _build_registry(
         self, 
@@ -139,7 +142,11 @@ class AgentRunner:
                         include_payload=self._config.trace.include_llm_payload
                     )
                 
-                loop = AgentLoop(provider, registry, bus)
+                loop = AgentLoop(
+                    provider, registry, bus, 
+                    permission_manager=self._permission_manager, 
+                    session_id=session.id if session is not None else ""
+                )
                 await loop.run(context)
             except asyncio.CancelledError:
                 cancelled = True

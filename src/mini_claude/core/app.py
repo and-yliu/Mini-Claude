@@ -25,7 +25,9 @@ from mini_claude.core.bus.commands import (
     SessionSendMessageCommand,
     SessionSendMessageResult,
     SessionGetHistoryCommand,
-    SessionGetHistoryResult
+    SessionGetHistoryResult,
+    PermissionRespondCommand,
+    PermissionRespondResult
 )
 from mini_claude.core.bus.envelope import EventPushEnvelope
 from mini_claude.core.config import ClaudeConfig, get_config
@@ -37,6 +39,7 @@ from mini_claude.core.transport.ipc_broadcaster import IpcEventBroadcaster
 from mini_claude.core.transport.socket_server import SocketServer, get_connection_writer
 from mini_claude.core.trace.writer import TraceRecord, TraceWriter
 from mini_claude.core.session.manager import SessionManager, SessionStore, Session
+from mini_claude.core.permissions.manager import PermissionManager, load_policy_file
 logger = logging.getLogger(__name__)
 
 
@@ -53,6 +56,7 @@ class CoreApp:
         self._config: ClaudeConfig | None = None
         self._trace: TraceWriter | None = None
         self._sessions: SessionManager | None = None
+        self._permission_manager: PermissionManager | None = None
 
     async def _ping_handler(self, params: dict[str, Any]) -> EventSubscribeResult:
         client = params.get("client", "unknown")
@@ -100,6 +104,16 @@ class CoreApp:
         await self._sessions.close(sid=command.session_id)
         return SessionCloseResult(status="closed")
 
+    async def _permission_respond_handler(self, params: dict[str, Any]) -> PermissionRespondResult:
+        command = PermissionRespondCommand.model_validate(params)
+        logger.info("permission.respond received tool_use_id=%s decision=%s", command.tool_use_id, command.decision)
+
+        if self._permission_manager is None:
+            logger.error("permission.respond: PermissionManager not initialized")
+            return PermissionRespondResult()
+        self._permission_manager.response(command.tool_use_id, command.decision)
+        return PermissionRespondResult()
+    
     async def _agent_run_handler(self, params: dict[str, Any]) -> AgentRunResult:
         assert self._config is not None
         command = AgentRunCommand.model_validate(params)
@@ -168,13 +182,21 @@ class CoreApp:
             await self._trace.start()
             self._bus.subscribe(self._trace_event_handler)
 
+        policy_file = Path("~/.mini/policy.toml").expanduser()
+        self._permission_manager = PermissionManager(policy_file=policy_file, timeout_s=self._config.permission.timeout_s)
+        logger.info(
+            "permission manager: timeout_s=%.1f  persistent=%d entries",
+            self._config.permission.timeout_s,
+            len(load_policy_file(policy_file)),
+        )
+
         self._broadcaster = IpcEventBroadcaster(trace=self._trace)
         self._bus.subscribe(self._broadcaster.handle)
         sessions_root = Path("~/.mini/sessions").expanduser()
         store = SessionStore(sessions_root)
         self._sessions = SessionManager(
             store, 
-            runner_factory= lambda: AgentRunner(self._config, bus=self._bus, trace=self._trace),
+            runner_factory= lambda: AgentRunner(self._config, bus=self._bus, trace=self._trace, permission_manager=self._permission_manager),
             bus=self._bus
         )
 
@@ -192,6 +214,7 @@ class CoreApp:
         server.register("session.send_message", self._session_message_handler)
         server.register("session.get_history", self._session_history_handler)
         server.register("session.close", self._session_close_handler)
+        server.register("permission.respond", self._permission_respond_handler)
 
 
         addr = await server.start()
