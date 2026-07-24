@@ -18,6 +18,8 @@ from mini_claude.core.events.bus import EventBus
 from mini_claude.core.runs import new_run_id
 from mini_claude.core.session.model import Session, SessionMode
 from mini_claude.core.session.store import SessionStore
+from mini_claude.core.llm.base import LLMProvider
+from mini_claude.core.compact.compactor import Compactor
 
 if TYPE_CHECKING:
     from mini_claude.core.runner import AgentRunner
@@ -30,12 +32,14 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 class SessionManager:
-    def __init__(self, store: SessionStore, runner_factory: Callable[[], AgentRunner], bus: EventBus):
+    def __init__(self, store: SessionStore, runner_factory: Callable[[], AgentRunner], bus: EventBus, provider: LLMProvider | None = None):
         self._store = store
         self._runner_factory = runner_factory
         self._bus = bus
+        self._provider = provider
         self._sessions: dict[str, Session] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        
     
     # create a session and write to meta.json
     async def create(self, session_mode: SessionMode, title: str = "") -> Session:
@@ -119,6 +123,37 @@ class SessionManager:
             session.updated_at = _now()
             self._store.write_meta(session)
             await self._bus.publish(SessionClosedEvent(session_id=sid, ts=session.updated_at))
+
+    # manual and overwrite thread.jsonl
+    async def compact(self, session_id: str, focus: str = ""):
+        session = self._get_session(session_id)
+        lock = self._locks[session_id]
+        if lock.locked():
+            raise HandlerError(SESSION_BUSY, "session busy")
+
+        if self._provider is None:
+            raise HandlerError(-32020, "provider not available for compaction")
+
+        async with lock:
+            from mini_claude.core.bus.commands import SessionCompactResult
+            messages = self._store.read_messages(session_id)
+            session_dir = self._store.session_dir(session_id)
+            compactor = Compactor(self._bus, session_dir, session_id)
+
+            result = await compactor.compact_messages(messages, self._provider, focus=focus)
+            if result is None:
+                raise HandlerError(-32021, "compaction failed or not beneficial")
+
+            self._store.write_compacted(session_id, [
+                {"role": "user", "content": result.summary_text},
+                {"role": "assistant", "content": "Understood, I'll continue from this summary."},
+            ])
+
+            return SessionCompactResult(
+                summary_tokens=result.summary_tokens,
+                saved_tokens=max(0, result.original_token_estimate - result.summary_tokens),
+            )
+
 
     # return a list of history for a session
     def list_history(self, sid: str) -> list[dict[str, Any]]:

@@ -27,7 +27,9 @@ from mini_claude.core.bus.commands import (
     SessionGetHistoryCommand,
     SessionGetHistoryResult,
     PermissionRespondCommand,
-    PermissionRespondResult
+    PermissionRespondResult,
+    SessionCompactCommand,
+    SessionCompactResult
 )
 from mini_claude.core.bus.envelope import EventPushEnvelope
 from mini_claude.core.config import ClaudeConfig, get_config
@@ -40,6 +42,7 @@ from mini_claude.core.transport.socket_server import SocketServer, get_connectio
 from mini_claude.core.trace.writer import TraceRecord, TraceWriter
 from mini_claude.core.session.manager import SessionManager, SessionStore, Session
 from mini_claude.core.permissions.manager import PermissionManager, load_policy_file
+from mini_claude.core.llm.provider import AnthropicProvider
 logger = logging.getLogger(__name__)
 
 
@@ -141,6 +144,12 @@ class CoreApp:
             )
         )
 
+    async def _session_compact_handler(self, params: dict[str, Any]) -> SessionCompactResult:
+        assert self._sessions is not None
+        cmd = SessionCompactCommand.model_validate(params)
+        result = await self._sessions.compact(cmd.session_id, cmd.focus)
+        return result
+
     async def _replay_event(self, run_id: str, writer: asyncio.StreamWriter, topics: list[str]) -> int:
         path = events_file(run_id)
         if not path.exists():
@@ -194,10 +203,12 @@ class CoreApp:
         self._bus.subscribe(self._broadcaster.handle)
         sessions_root = Path("~/.mini/sessions").expanduser()
         store = SessionStore(sessions_root)
+        compact_provider = AnthropicProvider(model=self._config.llm.default_model)
         self._sessions = SessionManager(
             store, 
             runner_factory= lambda: AgentRunner(self._config, bus=self._bus, trace=self._trace, permission_manager=self._permission_manager),
-            bus=self._bus
+            bus=self._bus,
+            provider=compact_provider
         )
 
         server = SocketServer(
@@ -215,6 +226,7 @@ class CoreApp:
         server.register("session.get_history", self._session_history_handler)
         server.register("session.close", self._session_close_handler)
         server.register("permission.respond", self._permission_respond_handler)
+        server.register("session.compact", self._session_compact_handler)
 
 
         addr = await server.start()

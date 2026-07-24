@@ -16,6 +16,15 @@ _SYSTEM_PROMPT = (
     "When the goal is fully achieved, respond with a final answer and do not call any more tools."
 )
 
+_MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    "claude-sonnet-5": 200_000,
+    "claude-haiku-4-5": 200_000,
+    "claude-opus-4-7": 200_000,
+}
+
+def _context_window(model: str) -> int:
+    return _MODEL_CONTEXT_WINDOWS.get(model, 200_000)
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -76,6 +85,7 @@ class AnthropicProvider:
         usage = final_message.usage
         cache_read: int = getattr(usage, "cache_read_input_tokens", 0) or 0
         cache_create: int = getattr(usage, "cache_creation_input_tokens", 0) or 0
+        context_percentage = usage.input_tokens / _context_window(self._model)
 
         await bus.publish(
             LlmUsageEvent(
@@ -84,6 +94,7 @@ class AnthropicProvider:
                 output_tokens=usage.output_tokens,
                 cache_read_input_tokens=cache_read,
                 cache_creation_input_tokens=cache_create,
+                context_pct=context_percentage,
                 ts=_now()
             )
         )
@@ -107,6 +118,7 @@ class AnthropicProvider:
                 input_tokens=usage.input_tokens,
                 output_tokens=usage.output_tokens,
                 cache_read_input_tokens=cache_read,
-                cache_creation_input_tokens = cache_create
+                cache_creation_input_tokens = cache_create,
+                context_pct=context_percentage
             )
         )

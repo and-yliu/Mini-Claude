@@ -10,6 +10,7 @@ from mini_claude.core.llm.base import LLMProvider
 from mini_claude.core.tools.invocation import invoke_tool
 from mini_claude.core.tools.registry import ToolRegistry
 from mini_claude.core.permissions.manager import PermissionManager
+from mini_claude.core.compact.compactor import Compactor
 
 
 def _now() -> str:
@@ -24,13 +25,17 @@ class AgentLoop:
         bus: EventBus,
         *,
         permission_manager: PermissionManager | None = None,
-        session_id: str = ""
+        session_id: str = "",
+        compact_threshold: float = 0.80,
+        compactor: Compactor | None = None
     ) -> None:
         self._provider = provider
         self._registry = registry
         self._bus = bus
         self._permission_manager = permission_manager
         self._session_id = session_id
+        self._compact_threshold = compact_threshold
+        self._compactor = compactor
     
     # plan -> act -> observer loop
     async def run(self, context: ExecutionContext) -> None:
@@ -87,6 +92,16 @@ class AgentLoop:
                 context.mark_success()
             elif context.step >= context.max_steps:
                 context.mark_failed("exceeded_max_steps")
+
+            if(
+                not context.is_done()
+                and response.stop_reason == "tool_use"
+                and response.usage is not None
+                and response.usage.context_pct >= self._compact_threshold
+                and self._compactor is not None
+                and self._compact_threshold > 0
+            ):
+                await self._compactor.compact(context, self._provider)
 
             await self._bus.publish(
                 StepFinishedEvent(run_id=context.run_id, step=context.step, ts=_now())

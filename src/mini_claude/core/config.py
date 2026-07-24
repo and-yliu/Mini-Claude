@@ -46,6 +46,12 @@ class TraceConfig:
 class PermissionConfig:
     timeout_s: float = 60.0
 
+@dataclass
+class CompactConfig:
+    auto_threshold : float = 0.0
+    tool_result_limit: int = 8000
+    tool_result_keep: int = 4000
+
 
 @dataclass
 class ClaudeConfig:
@@ -56,6 +62,7 @@ class ClaudeConfig:
     llm: LlmConfig = field(default_factory=LlmConfig)
     trace: TraceConfig = field(default_factory=TraceConfig)
     permission: PermissionConfig = field(default_factory=PermissionConfig)
+    compact: CompactConfig = field(default_factory=CompactConfig)
 
 def get_config() -> ClaudeConfig:
     config = ClaudeConfig()
@@ -178,6 +185,29 @@ def _apply_toml(config: ClaudeConfig, data: dict[str, Any]):
             if not isinstance(val, (int, float)) or val < 0:
                 raise SystemExit("Config error: permission.timeout_s must be a non-negative number")
             config.permission.timeout_s = float(val)
+
+    if "compact" in data:
+        compact = data["compact"]
+        if not isinstance(compact, dict):
+            raise SystemExit("Config error: [compact] must be a table")
+        unknown_compact: set[str] = set(compact.keys()) - {"auto_threshold", "tool_result_limit", "tool_result_keep"}
+        if unknown_compact:
+            raise SystemExit(f"Unknown [compact] keys: {', '.join(sorted(unknown_compact))}")
+        if "auto_threshold" in compact:
+            val = compact["auto_threshold"]
+            if not isinstance(val, (int, float)) or val < 0 or val > 1:
+                raise SystemExit("Config error: compact.auto_threshold must between 0 and 1")
+            config.compact.auto_threshold = float(val)
+        if "tool_result_limit" in compact:
+            val = compact["tool_result_limit"]
+            if not isinstance(val, (int, float)) or val < 0:
+                raise SystemExit("Config error: compact.tool_result_limit must be a non-negative number")
+            config.compact.tool_result_limit = int(val)
+        if "tool_result_keep" in compact:
+            val = compact["tool_result_keep"]
+            if not isinstance(val, (int, float)) or val < 0:
+                raise SystemExit("Config error: compact.tool_result_keep must be a non-negative number")
+            config.compact.tool_result_keep = int(val)
 
 
 # Use CLAUDE_* env variable to cover variable in config

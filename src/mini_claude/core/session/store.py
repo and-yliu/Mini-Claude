@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from mini_claude.core.session.model import Session
+from mini_claude.core.compact.tool_result import compact_tool_result
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,7 @@ class SessionStore:
             messages.append({"role": role, "content": row.get("content", "")})
 
         messages = self._trim_orphan_tool_use(messages)
-        return messages
+        return compact_tool_result(messages)
 
     # Trim orphan tool_use blocks from thread to avoid Anthropic messages.invalid
     def _trim_orphan_tool_use(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

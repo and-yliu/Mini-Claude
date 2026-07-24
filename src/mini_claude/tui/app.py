@@ -337,6 +337,7 @@ class MiniClaudeTuiApp(App[None]):
         self._pending_permission_blocks: dict[str, PermissionBlock] = {}
         self._session_id: str | None = None
         self._busy = False
+        self._last_context_pct: float = 0
 
     
     # UI: top status bar and rolling log
@@ -380,6 +381,39 @@ class MiniClaudeTuiApp(App[None]):
         except Exception:
             pass
 
+    async def _do_compact(self, focus: str = "") -> None:
+        try:
+            if self._client is None or self._session_id is None:
+                return
+            self._append(Static("[dim]⚡ compacting context...[/dim]", classes="log-line"))
+            
+            result = await self._client.send_command(
+                method="session.compact",
+                params={"session_id": self._session_id, "focus": focus}
+            )
+
+            summary_tokens = result.get("summary_tokens", 0)
+            saved_tokens = result.get("saved_tokens", 0)
+            self._last_context_pct = 0.0
+
+            self._append(Static(
+                f"[bold cyan]⚡ Context compacted[/bold cyan]"
+                f"  [dim]summary={summary_tokens} tokens  saved≈{saved_tokens} tokens[/dim]",
+                classes="log-line",
+            ))
+        except  (IpcError, RuntimeError, OSError) as e:
+            self._append(Static(f"[red]compact error: {e}[/red]", classes="log-line"))
+        finally:
+            self._busy = False
+            prompt = self._prompt()
+            if prompt is not None:
+                prompt.disabled = False
+                prompt.read_only = False
+                prompt.border_title = "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
+                prompt.focus()
+
+            self._update_header("ready")
+
     async def action_quit(self) -> None:
         if self._client is not None and self._session_id is not None:
             try:
@@ -392,9 +426,25 @@ class MiniClaudeTuiApp(App[None]):
         content = event.value.strip()
         if not content:
             return
+
+        command, _, focus = content.partition(" ")
+
         if self._client is None or self._session_id is None or self._busy:
             self._append(Static("[yellow]agent busy or disconnected[/yellow]", classes="log-line"))
             return
+
+        if command == "/compact":
+            prompt = event.text_area
+            prompt.text = ""
+            prompt.disabled = True
+            prompt.border_title = "compacting context..."
+
+            self._busy = True
+            self._update_header("running")
+            self.run_worker(self._do_compact(focus.strip()), name="compact", exclusive=False)
+            
+            return
+        
         self._busy = True
         prompt = event.text_area
         prompt.text = ""
@@ -468,6 +518,18 @@ class MiniClaudeTuiApp(App[None]):
             return self.query_one("#prompt", ChatTextArea)
         except NoMatches:
             return None
+
+    def _render_ctx_bar(self, pct: float) -> str:
+        filled = int(pct * 20)
+        bar = "█" * filled + "░" * (20 - filled)
+        label = f"ctx:{pct * 100:.1f}%"
+        if pct >= 0.85:
+            color = "bold red"
+        elif pct >= 0.70:
+            color = "yellow"
+        else:
+            color = "dim"
+        return f"[{color}]{label} {bar}[/{color}]"
         
     def _update_header(self, state: str) -> None:
         try:
@@ -519,8 +581,9 @@ class MiniClaudeTuiApp(App[None]):
 
                 params: dict[str, Any] = {
                     "topics": [
-                        "session.*", "run.*", "step.*", "tool.*",
-                        "llm.token", "llm.usage", "log.*", "permission.*"
+                        "session.*", "run.*", "step.*",
+                        "tool.*", "llm.token", "llm.usage",
+                        "log.*", "permission.*", "context.*"
                     ],
                     "scope": "global",
                 }
@@ -650,12 +713,26 @@ class MiniClaudeTuiApp(App[None]):
                 ))
 
         elif t == "llm.usage":
+            pct = event.get('context_pct')
+            self._last_context_pct = pct
+            ctx_bar = self._render_ctx_bar(pct)
             self._append(Static(
                 f"[dim]  tokens  "
                 f"in={event.get('input_tokens')} "
                 f"out={event.get('output_tokens')} "
-                f"cache={event.get('cache_read_input_tokens')}[/dim]",
-                classes="usage",
+                f"cache={event.get('cache_read_input_tokens')}[/dim]"
+                f"  {ctx_bar}",
+                classes="usage"
+            ))
+
+        elif t == "context.compacted":
+            orig = event.get("original_tokens", 0)
+            summary = event.get("summary_tokens", 0)
+            self._last_context_pct = 0.0
+            self._append(Static(
+                f"[bold cyan]⚡ Context compacted[/bold cyan]"
+                f"  [dim]original≈{orig} tokens → summary={summary} tokens[/dim]",
+                classes="log-line",
             ))
 
         elif t == "permission.requested":

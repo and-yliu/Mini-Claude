@@ -31,6 +31,8 @@ from mini_claude.core.trace.provider import TracingProvder
 from mini_claude.core.task.manager import TaskManager
 from mini_claude.core.session.manager import Session, SessionStore
 from mini_claude.core.permissions.manager import PermissionManager
+from mini_claude.core.memory.loader import load_context_file
+from mini_claude.core.compact.compactor import Compactor
 
 def _now(): 
     return datetime.now(UTC).isoformat()
@@ -115,6 +117,9 @@ class AgentRunner:
         for h in self._extra_handlers:
             bus.subscribe(h)
 
+        global_context = load_context_file(Path("~/.mini/context.md").expanduser())
+        project_context = load_context_file(Path(".mini/context.md"))
+
         # create working memory
         context = ExecutionContext(
             run_id=run_id,
@@ -122,6 +127,8 @@ class AgentRunner:
             prefill_messages=history,
             session_notes=notes,
             max_steps=self._config.agent.max_steps,
+            global_context=global_context,
+            project_context=project_context,
         )
 
         # open event file and start the loop
@@ -141,10 +148,16 @@ class AgentRunner:
                         self._trace,
                         include_payload=self._config.trace.include_llm_payload
                     )
+
+                session_dir = store.session_dir(session.id) if session is not None and store is not None else run_path
+                session_id_str = session.id if session is not None else ""
+                compactor = Compactor(bus, session_dir, session_id_str)
                 
                 loop = AgentLoop(
                     provider, registry, bus, 
                     permission_manager=self._permission_manager, 
+                    compact_threshold=self._config.compact.auto_threshold,
+                    compactor=compactor,
                     session_id=session.id if session is not None else ""
                 )
                 await loop.run(context)
