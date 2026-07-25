@@ -18,6 +18,7 @@ class ExecutionContext:
     result: str = ""
     global_context: str = ""
     project_context: str = ""
+    system_prompt_override: str | None = None
 
     # add goal as first message
     def __post_init__(self) -> None:
@@ -31,7 +32,7 @@ class ExecutionContext:
         self.messages.append({"role": "assistant", "content": content})
     
     def system_prompt(self, base: str) -> str:
-        parts = [base]
+        parts = [self.system_prompt_override if self.system_prompt_override else base]
         if self.global_context.strip():
             parts.append("\n\n## Global Context\n" + self.global_context.strip())
         if self.project_context.strip():

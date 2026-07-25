@@ -13,6 +13,7 @@ from mini_claude.core.bus.events import (
     SessionMessageReceivedEvent,
     SessionResumedEvent,
     SessionWaitingForInputEvent,
+    SkillInvokedEvent
 )
 from mini_claude.core.events.bus import EventBus
 from mini_claude.core.runs import new_run_id
@@ -20,6 +21,7 @@ from mini_claude.core.session.model import Session, SessionMode
 from mini_claude.core.session.store import SessionStore
 from mini_claude.core.llm.base import LLMProvider
 from mini_claude.core.compact.compactor import Compactor
+from mini_claude.core.skills.loader import SkillLoader
 
 if TYPE_CHECKING:
     from mini_claude.core.runner import AgentRunner
@@ -39,6 +41,7 @@ class SessionManager:
         self._provider = provider
         self._sessions: dict[str, Session] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._skill_loader = SkillLoader()
         
     
     # create a session and write to meta.json
@@ -87,12 +90,35 @@ class SessionManager:
             session.updated_at = _now()
             self._store.write_meta(session)
 
+            goal = content
+            system_prompt_override: str | None = None
+            tool_whitelist: list[str] | None = None
+            if content.startswith("/"):
+                parts = content[1:].split(None, 1)
+                skill_name = parts[0]
+                skill_prompt = parts[1] if len(parts) > 1 else ""
+                skill = self._skill_loader.resolve(skill_name)
+                if skill_name is not None:
+                    goal = self._skill_loader.render_prompt(skill_name, skill_prompt)
+                    system_prompt_override = skill.system_prompt_template
+                    tool_whitelist = skill.allowed_tools or None
+                    await self._bus.publish(
+                        SkillInvokedEvent(
+                            skill_name=skill_name,
+                            arguments=goal,
+                            run_id=run_id,
+                            ts=_now(),
+                        )
+                    )
+
             runner = self._runner_factory()
             await runner.run_and_capture(
-                content,
+                goal,
                 run_id=run_id,
                 session=session,
                 store=self._store,
+                system_prompt_override=system_prompt_override,
+                tool_whitelist=tool_whitelist
             )
 
             session.updated_at = _now()

@@ -70,19 +70,35 @@ class AgentRunner:
         *,
         store: SessionStore | None = None, 
         session: Session | None = None, 
-        run_id: str | None = None
+        run_id: str | None = None,
+        tool_whitelist: list[str] | None = None,
     ) -> ToolRegistry:
+        allowed: set[str] | None = set(tool_whitelist) if tool_whitelist else None
+
+        def _ok(name: str) -> bool:
+            return allowed is None or name in allowed
+
+        
         registry = ToolRegistry()
-        registry.register(ReadFileTool())
-        registry.register(BashTool())
-        registry.register(WriteFileTool())
-        registry.register(ListDirTool())
-        registry.register(TaskCreateTool(task_manager))
-        registry.register(TaskUpdateTool(task_manager))
-        registry.register(TaskListTool(task_manager))
-        registry.register(TaskGetTool(task_manager))
+
+        for t in [ReadFileTool(), BashTool(), WriteFileTool(), ListDirTool()]:
+            if _ok(t.name):
+                registry.register(t)
+
+
+        for t in [
+            TaskCreateTool(task_manager),
+            TaskUpdateTool(task_manager),
+            TaskListTool(task_manager),
+            TaskGetTool(task_manager),
+        ]:
+            if _ok(t.name):
+                registry.register(t)
+        
         if session is not None and store is not None and run_id is not None:
-            registry.register(NoteSaveTool(store, session.id, run_id))
+            tool = NoteSaveTool(store, session.id, run_id)
+            if _ok(tool.name):
+                registry.register(tool)
         return registry
     
     async def run(self, goal: str, run_id: str | None = None) -> None:
@@ -96,7 +112,9 @@ class AgentRunner:
         *,
         run_id: str | None = None, 
         session: Session | None = None, 
-        store: SessionStore | None = None 
+        store: SessionStore | None = None,
+        system_prompt_override: str | None = None,
+        tool_whitelist: list[str] | None = None
     ) -> RunOutcome:
         # create run directory
         run_id = run_id or new_run_id()
@@ -129,7 +147,9 @@ class AgentRunner:
             max_steps=self._config.agent.max_steps,
             global_context=global_context,
             project_context=project_context,
+            system_prompt_override=system_prompt_override
         )
+        prefill_len = len(history)
 
         # open event file and start the loop
         async with EventWriter(run_path / "events.jsonl") as writer:
@@ -138,7 +158,7 @@ class AgentRunner:
 
             # get llm provider, tool and agent loop
             provider = self._provider or AnthropicProvider(self._config.llm.default_model)
-            registry = self._build_registry(task_manager, store=store, session=session, run_id=run_id)
+            registry = self._build_registry(task_manager, store=store, session=session, run_id=run_id, tool_whitelist=tool_whitelist)
 
             cancelled = False
             try:
@@ -179,6 +199,15 @@ class AgentRunner:
                 )
             )
 
+        if session is not None and store is not None:
+            store.append_messages(session.id, context.messages[prefill_len:], run_id=run_id)
+
         if cancelled:
             raise asyncio.CancelledError()
+
+        return RunOutcome(
+            status=context.status,
+            result=context.result,
+            reason=context.reason,
+        )
 
