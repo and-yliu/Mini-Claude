@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -233,6 +234,9 @@ class AgentRunner:
                 if not context.is_done():
                     context.mark_failed("cancelled")
             except Exception:
+                logging.getLogger(__name__).exception(
+                    "agent run failed run_id=%s step=%d", run_id, context.step
+                )
                 if not context.is_done():
                     context.mark_failed("llm-error")
 

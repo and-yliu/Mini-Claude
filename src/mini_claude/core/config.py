@@ -38,7 +38,7 @@ class LlmConfig:
 
 @dataclass
 class TraceConfig:
-    enable: bool = True
+    enabled: bool = True
     file: str = _DEFAULT_TRACE_FILE
     include_llm_payload: bool = True
 

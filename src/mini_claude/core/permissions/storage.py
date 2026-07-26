@@ -34,8 +34,8 @@ def save_policy_file(always: dict[str, str], path: Path | None = None) -> None:
     p = (path or _DEFAULT_POLICY_PATH).expanduser()
     p.parent.mkdir(parents=True, exist_ok=True)
     lines = [
-        "# ~/.kama/policy.toml",
-        "# Auto generated and manage by kama-core, can be change manually but the format must be correct",
+        "# ~/.mini/policy.toml",
+        "# Auto generated and manage by claude-core, can be change manually but the format must be correct",
         "",
         "[always]",
     ]

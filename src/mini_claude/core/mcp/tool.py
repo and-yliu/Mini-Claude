@@ -35,7 +35,7 @@ class McpTool(BaseTool):
                 is_error=True,
                 error_type="runtime_error",
             )
-        except Exception:
+        except Exception as exc:
             return ToolResult(
                 content=f"mcp tool '{self.name}' unexpected error: {exc}",
                 is_error=True,

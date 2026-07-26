@@ -187,7 +187,7 @@ class CoreApp:
         setup_logging(self._config)
 
 
-        if self._config.trace.enable:
+        if self._config.trace.enabled:
             trace_path = Path(self._config.trace.file).expanduser()
             self._trace = TraceWriter(trace_path)
             await self._trace.start()

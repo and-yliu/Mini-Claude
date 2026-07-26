@@ -90,7 +90,7 @@ class McpClient:
         return tool
 
     # call the tool on the MCP server, return all text response
-    async def tool_call(self, name: str, arguments: dict[str: Any]) -> str:
+    async def tool_call(self, name: str, arguments: dict[str, Any]) -> str:
         response = await self._call(
             "tools/call", 
             {

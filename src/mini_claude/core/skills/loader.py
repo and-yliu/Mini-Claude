@@ -51,7 +51,7 @@ class SkillLoader:
 
     # find the skill related to the name
     def resolve(self, name: str) -> Skill | None:
-        for path in self._search_paths(name):
+        for path in self._search_path(name):
             if path.exists():
                 try:
                     return _parse_skill_document(path)

@@ -29,6 +29,8 @@ class McpServerManager:
                     cfg.name, len(tool_defs),
                 )
             except Exception:
+                if client is not None:
+                    await client.close()
                 log.exception("mcp: server '%s' failed to start, skipping", cfg.name)
 
     # registor all discovered tool to ToolRegistry

@@ -4,22 +4,23 @@ import asyncio
 import time
 from datetime import UTC, datetime
 from typing import Any
+
 from pydantic import ValidationError
 
 from mini_claude.core.bus.events import (
+    PermissionDeniedEvent,
+    PermissionGrantedEvent,
+    PermissionRequestedEvent,
     ToolCallFailedEvent,
     ToolCallFinishedEvent,
     ToolCallStartedEvent,
-    PermissionRequestedEvent,
-    PermissionGrantedEvent,
-    PermissionDeniedEvent
 )
 from mini_claude.core.events.bus import EventBus
 from mini_claude.core.llm.types import ToolCallBlock
-from mini_claude.core.tools.base import ToolResult
-from mini_claude.core.tools.registry import ToolRegistry
 from mini_claude.core.permissions.manager import PermissionManager
+from mini_claude.core.tools.base import ToolResult
 from mini_claude.core.tools.errors import RateLimitedError
+from mini_claude.core.tools.registry import ToolRegistry
 
 _DEFAULT_TIMEOUT: float = 120.0
 _MAX_RETRIES: int = 2
@@ -48,7 +49,8 @@ async def _fail(
             error_type=error_type,
             error_message=error_message,
             elapsed_ms=elapsed_ms,
-            attempt=attempt
+            attempt=attempt,
+            ts=_now(),
         )
     )
 
@@ -150,18 +152,18 @@ async def invoke_tool(
             if result.is_error:
                 error_class = result.error_type or "runtime_error"
                 error_message = result.content
-
-            await bus.publish(
-                ToolCallFinishedEvent(
-                    run_id=run_id,
-                    tool_use_id=tool_call.id,
-                    tool_name=tool_call.name,
-                    elapsed_ms=ms,
-                    output=result.content,
-                    ts=_now()
+            else:
+                await bus.publish(
+                    ToolCallFinishedEvent(
+                        run_id=run_id,
+                        tool_use_id=tool_call.id,
+                        tool_name=tool_call.name,
+                        elapsed_ms=ms,
+                        output=result.content,
+                        ts=_now(),
+                    )
                 )
-            )
-            return result
+                return result
         except RateLimitedError as exc:
             error_class = "rate_limited"
             error_message = str(exc)
@@ -184,7 +186,7 @@ async def invoke_tool(
                     run_id=run_id,
                     tool_use_id=tool_call.id,
                     tool_name=tool_call.name,
-                    error_class=error_class,
+                    error_type=error_class,
                     error_message=error_message,
                     elapsed_ms=ms,
                     attempt=attempt,
@@ -199,3 +201,9 @@ async def invoke_tool(
             error_class, error_message, ms,
             attempt=attempt,
         )
+
+    return ToolResult(
+        content="internal tool invocation error",
+        is_error=True,
+        error_type="runtime_error",
+    )

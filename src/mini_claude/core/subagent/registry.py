@@ -20,3 +20,18 @@ class BackgroundTaskRegistry:
     # return all background task and its execution context, use to do cleanup
     def all(self) -> list[tuple[asyncio.Task[None], ExecutionContext]]:
         return list(self._tasks.values())
+
+    async def cancel_all(self) -> None:
+        tasks = [
+            task
+            for task, _context in self._tasks.values()
+            if not task.done()
+        ]
+
+        for task in tasks:
+            task.cancel()
+
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        self._tasks.clear()

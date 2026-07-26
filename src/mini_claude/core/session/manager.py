@@ -98,8 +98,8 @@ class SessionManager:
                 skill_name = parts[0]
                 skill_prompt = parts[1] if len(parts) > 1 else ""
                 skill = self._skill_loader.resolve(skill_name)
-                if skill_name is not None:
-                    goal = self._skill_loader.render_prompt(skill_name, skill_prompt)
+                if skill is not None:
+                    goal = self._skill_loader.render_prompt(skill, skill_prompt)
                     system_prompt_override = skill.system_prompt_template
                     tool_whitelist = skill.allowed_tools or None
                     await self._bus.publish(

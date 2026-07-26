@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 from rich.markdown import Markdown
@@ -16,12 +17,14 @@ from textual.message import Message
 from textual.css.query import NoMatches
 
 from mini_claude.core.config import ClaudeConfig
+from mini_claude.core.skills.loader import SkillLoader
 from mini_claude.core.transport.socket_client import IpcError, SocketClient
 
 log = logging.getLogger(__name__)
 
 def _preview(s: str, n: int) -> str:
-        return s[:n] + "…" if len(s) > n else s
+    string = s.splitlines()[0]
+    return string[:n] + "…" if len(s) > n else string
 
 
 def _params_str(params: dict[str, Any]) -> str:
@@ -55,7 +58,7 @@ class LLMStreamBlock(Static):
         self._text += token
         self.update(self._text)
 
-    def finalize_markdone(self) -> None:
+    def finalize_markdown(self) -> None:
         if self._finalized:
             return
         self._finalized = True
@@ -256,6 +259,73 @@ class PermissionBlock(Static):
         )
         self.post_message(self.Resolved(self, decision))
 
+class SlashCompleteWidget(Static):
+    can_focus = False
+
+    DEFAULT_CSS = """
+    SlashCompleteWidget {
+        height: auto;
+        padding: 0 1;
+        margin: 0 2;
+        background: $surface;
+        border: round $surface-lighten-2;
+    }
+    """
+
+    class Selected(Message):
+        def __init__(self, skill_name: str) -> None:
+            self.skill_name = skill_name
+            super().__init__()
+
+    def __init__(self, items: list[tuple[str, str]]) -> None:
+        super().__init__("")
+        self._all_items = items
+        self._filtered: list[tuple[str, str]] = list(items)
+        self._cursor = 0
+
+    def set_query(self, query:str):
+        q = query.lower()
+        self._filtered = [(n, d) for n, d in self._all_items if not q or q in n.lower()]
+        self._cursor = min(self._cursor, max(0, len(self._filtered) - 1))
+        if self.is_attached:
+            self._redraw()
+
+    def move_up(self) -> None:
+        if self._filtered:
+            self._cursor = (self._cursor - 1) % len(self._filtered)
+            self._redraw()
+
+    def move_down(self) -> None:
+        if self._filtered:
+            self._cursor = (self._cursor + 1) % len(self._filtered)
+            self._redraw()
+
+    def select_current(self) -> None:
+        if self._filtered:
+            self.post_message(self.Selected(self._filtered[self._cursor][0]))
+
+    def has_selection(self) -> bool:
+        return len(self._filtered) > 0
+
+    def on_mount(self) -> None:
+        self._redraw()
+
+    def _redraw(self) -> None:
+        if not self._filtered:
+            self.update("[dim]  no matching commands[/dim]")
+            return
+        lines: list[str] = []
+        for i, (name, desc) in enumerate(self._filtered):
+            desc_part = f"  [dim]{desc}[/dim]" if desc else ""
+            if i == self._cursor:
+                lines.append(f"  [bold cyan]❯ /{name}[/bold cyan]{desc_part}")
+            else:
+                lines.append(f"    [cyan]/{name}[/cyan]{desc_part}")
+        lines.append("[dim]  ↑↓ navigate   tab/enter select   esc dismiss[/dim]")
+        self.update("\n".join(lines))
+
+
+
 
 class ChatTextArea(TextArea):
     DEFAULT_CSS = """
@@ -280,12 +350,36 @@ class ChatTextArea(TextArea):
             self.text_area = area
             self.value = area.text
             super().__init__()
+
+    class SlashChanged(Message):
+        def __init__(self, query: str | None) -> None:
+            self.query = query
+            super().__init__()
+
+    def on_text_area_changed(self, event: TextArea.Changed):
+        text = self.text
+        if text.startswith("/") and " " not in text:
+            self.post_message(ChatTextArea.SlashChanged(query=text[1:]))
+        else:
+            self.post_message(ChatTextArea.SlashChanged(query=None))
+            
     
     async def _on_key(self, event: events.Key):
         key = event.key
+
+        popup: SlashCompleteWidget | None = None
+        try:
+            popup = self.app.query_one(SlashCompleteWidget)
+        except NoMatches:
+            popup = None
+
         if key == "enter":
             event.stop()
             event.prevent_default()
+            if popup is not None and popup.has_selection():
+                popup.select_current()
+                return
+
             if self.text.strip():
                 self.post_message(self.Submitted(self))
             return
@@ -295,6 +389,28 @@ class ChatTextArea(TextArea):
             if not self.read_only:
                 self.insert("\n")
             return
+        if popup is not None:
+            if key == "up":
+                event.stop()
+                event.prevent_default()
+                popup.move_up()
+                return
+            if key == "down":
+                event.stop()
+                event.prevent_default()
+                popup.move_down()
+                return
+            if key == "tab":
+                event.stop()
+                event.prevent_default()
+                popup.select_current()
+                return
+            if key == "escape":
+                event.stop()
+                event.prevent_default()
+                self.post_message(ChatTextArea.SlashChanged(query=None))
+                return
+
         await super()._on_key(event)
 
 
@@ -338,6 +454,9 @@ class MiniClaudeTuiApp(App[None]):
         self._session_id: str | None = None
         self._busy = False
         self._last_context_pct: float = 0
+        self._slash_items: list[tuple[str, str]] = []
+        self._subagent_run_ids: dict[str, str] = {}  # child run_id -> description
+        self._subagent_start_times: dict[str, float] = {}  # child run_id -> start time
 
     
     # UI: top status bar and rolling log
@@ -348,10 +467,24 @@ class MiniClaudeTuiApp(App[None]):
 
     # run on application start
     def on_mount(self) -> None:
+        self._slash_items = self._build_slash_items()
         self.run_worker(self._socket_loop(), exclusive=True, name="socket")
         prompt = self.query_one("#prompt", ChatTextArea)
         prompt.disabled = True
         prompt.border_title = "connecting..."
+
+    def _build_slash_items(self):
+        items: list[tuple[str, str]] = [("compact", "compress context window")]
+        try:
+            loader = SkillLoader()
+            for skill in loader.list_all_skills():
+                desc = skill.description.splitlines()[0] if skill.description else ""
+                if len(desc) > 60:
+                    desc = desc[:57] + "..."
+                items.append((skill.name, desc))
+        except Exception:
+            pass
+        return items
 
     def _on_key(self, event):
         log.debug("App.on_key  key=%r  focused=%r", event.key, self.focused)
@@ -421,6 +554,34 @@ class MiniClaudeTuiApp(App[None]):
             except (IpcError, RuntimeError, OSError):
                 self._append(Static("[yellow]warning: failed to close session[/yellow]"))
         self.exit()
+
+    async def on_chat_text_area_slash_changed(self, event: ChatTextArea.SlashChanged) -> None:
+        query = event.query
+        if query is None:
+            try:
+                self.query_one(SlashCompleteWidget).remove()
+            except NoMatches:
+                pass
+            return
+        try:
+            popup = self.query_one(SlashCompleteWidget)
+            popup.set_query(query)
+        except NoMatches:
+            popup = SlashCompleteWidget(self._slash_items)
+            self.mount(popup, before="#prompt")
+            popup.set_query(query)
+
+    async def on_slash_complete_widget_selected(self, event: SlashCompleteWidget.Selected) -> None:
+        prompt = self._prompt()
+        if prompt is not None:
+            prompt.text = f"/{event.skill_name} "
+            prompt.move_cursor(prompt.document.end)
+
+        try:
+            self.query_one(SlashCompleteWidget).remove()
+        except NoMatches:
+            pass
+
     
     async def on_chat_text_area_submitted(self, event: ChatTextArea.Submitted) -> None:
         content = event.value.strip()
@@ -511,7 +672,9 @@ class MiniClaudeTuiApp(App[None]):
 
     # this LLMStreamBlock is done and next token will create a new block
     def _break_llm(self) -> None:
-        self._current_llm = None
+        if self._current_llm is not None:
+            self._current_llm.finalize_markdown()
+            self._current_llm = None
     
     def _prompt(self) -> ChatTextArea | None:
         try:
@@ -583,7 +746,8 @@ class MiniClaudeTuiApp(App[None]):
                     "topics": [
                         "session.*", "run.*", "step.*",
                         "tool.*", "llm.token", "llm.usage",
-                        "log.*", "permission.*", "context.*"
+                        "log.*", "permission.*", "context.*",
+                        "subagent.*", "skill.*",
                     ],
                     "scope": "global",
                 }
@@ -780,7 +944,44 @@ class MiniClaudeTuiApp(App[None]):
                         p.border_title = "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
                         p.focus()
 
+        elif t == "skill.invoked":
+            skill_name = event.get("skill_name", "")
+            arguments = event.get("arguments", "")
+            args_preview = _preview(arguments, 80) if arguments else ""
+            args_part = f"  [dim]{args_preview}[/dim]" if args_preview else ""
+            self._append(Static(
+                f"[bold cyan]/{skill_name}[/bold cyan]{args_part}",
+                classes="log-line",
+            ))
 
+        elif t == "subagent.started":
+            run_id = event.get("run_id", "")
+            description = event.get("description", "")
+            self._subagent_run_ids[run_id] = description
+            self._subagent_start_times[run_id] = time.monotonic()
+            short_id = run_id[:8] if len(run_id) >= 8 else run_id
+            self._append(Static(
+                f"[dim]┌─[/dim] [cyan]{_preview(description, 72)}[/cyan]  [dim]{short_id}[/dim]",
+                classes="log-line",
+            ))
+        
+        elif t == "subagent.finished":
+            run_id = event.get("run_id", "")
+            status = event.get("status", "")
+            description = self._subagent_run_ids.pop(run_id, event.get("description", ""))
+            start = self._subagent_start_times.pop(run_id, None)
+            elapsed = f"  [dim]{time.monotonic() - start:.1f}s[/dim]" if start is not None else ""
+            desc_part = f"[cyan]{_preview(description, 72)}[/cyan]{elapsed}"
+            if status == "success":
+                self._append(Static(
+                    f"[dim]└─[/dim] [bold green]✓[/bold green] {desc_part}",
+                    classes="log-line",
+                ))
+            else:
+                self._append(Static(
+                    f"[dim]└─[/dim] [bold red]✗[/bold red] {desc_part}",
+                    classes="log-line",
+                ))
 
         elif t == "log.line":
             level = event.get("level", "INFO")
