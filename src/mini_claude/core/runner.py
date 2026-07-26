@@ -13,7 +13,10 @@ from mini_claude.core.events.writer import EventWriter
 from mini_claude.core.llm.base import LLMProvider
 from mini_claude.core.llm.provider import AnthropicProvider
 from mini_claude.core.loop import AgentLoop
+from mini_claude.core.mcp.server import McpServerManager
 from mini_claude.core.runs import RUNS_DIR, new_run_id, ensure_run_dir
+from mini_claude.core.subagent.registry import BackgroundTaskRegistry
+from mini_claude.core.subagent.tool import AgentResultTool, SubagentTool
 from mini_claude.core.tools.builtin import (
     BashTool,
     ListDirTool,
@@ -54,7 +57,8 @@ class AgentRunner:
         extra_handlers: list[EventHandler] | None = None,
         runs_dir: Path | None = None,
         trace: TraceWriter | None = None,
-        permission_manager: PermissionManager | None = None
+        permission_manager: PermissionManager | None = None,
+        mcp_manager: McpServerManager | None = None
     ) -> None:
         self._config = config
         self._bus = bus
@@ -63,6 +67,8 @@ class AgentRunner:
         self._runs_dir = runs_dir or RUNS_DIR
         self._trace = trace
         self._permission_manager = permission_manager
+        self._task_registry = BackgroundTaskRegistry()
+        self._mcp_manager = mcp_manager
     
     def _build_registry(
         self, 
@@ -71,6 +77,10 @@ class AgentRunner:
         store: SessionStore | None = None, 
         session: Session | None = None, 
         run_id: str | None = None,
+        provider: LLMProvider | None = None,
+        bus: EventBus | None = None,
+        child_runs_dir: Path | None = None,
+        session_id: str = "",
         tool_whitelist: list[str] | None = None,
     ) -> ToolRegistry:
         allowed: set[str] | None = set(tool_whitelist) if tool_whitelist else None
@@ -99,6 +109,28 @@ class AgentRunner:
             tool = NoteSaveTool(store, session.id, run_id)
             if _ok(tool.name):
                 registry.register(tool)
+
+        if provider is not None and bus is not None and run_id is not None:
+            run_dir = child_runs_dir or self._runs_dir
+            if _ok("subagent"):
+                registry.register(SubagentTool(
+                    provider=provider,
+                    parent_bus=bus,
+                    parent_run_id=run_id,
+                    session_id=session_id,
+                    permission_manager=self._permission_manager,
+                    task_registry=self._task_registry,
+                    runs_dir=run_dir,
+                    max_steps=self._config.agent.max_steps,
+                    depth=0
+                ))
+            if _ok("agent_result"):
+                registry.register(AgentResultTool(self._task_registry))
+
+        if self._mcp_manager is not None:
+            for mcp_tool in self._mcp_manager.get_tools():
+                if _ok(mcp_tool.name):
+                    registry.register(mcp_tool)
         return registry
     
     async def run(self, goal: str, run_id: str | None = None) -> None:
@@ -158,17 +190,32 @@ class AgentRunner:
 
             # get llm provider, tool and agent loop
             provider = self._provider or AnthropicProvider(self._config.llm.default_model)
-            registry = self._build_registry(task_manager, store=store, session=session, run_id=run_id, tool_whitelist=tool_whitelist)
+            if self._trace:
+                provider = TracingProvder(
+                    provider,
+                    self._trace,
+                    include_payload=self._config.trace.include_llm_payload
+                )
+            session_id_str = session.id if session is not None else ""
+            child_runs_dir = (
+                store.runs_dir(session.id)
+                if session is not None and store is not None
+                else self._runs_dir
+            )
+            registry = self._build_registry(
+                task_manager, 
+                store=store, 
+                session=session, 
+                run_id=run_id, 
+                provider=provider,
+                bus=bus,
+                child_runs_dir=child_runs_dir,
+                session_id=session_id_str,
+                tool_whitelist=tool_whitelist
+            )
 
             cancelled = False
             try:
-                if self._trace:
-                    provider = TracingProvder(
-                        provider,
-                        self._trace,
-                        include_payload=self._config.trace.include_llm_payload
-                    )
-
                 session_dir = store.session_dir(session.id) if session is not None and store is not None else run_path
                 session_id_str = session.id if session is not None else ""
                 compactor = Compactor(bus, session_dir, session_id_str)

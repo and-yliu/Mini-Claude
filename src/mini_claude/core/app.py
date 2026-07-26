@@ -35,6 +35,7 @@ from mini_claude.core.bus.envelope import EventPushEnvelope
 from mini_claude.core.config import ClaudeConfig, get_config
 from mini_claude.core.events.bus import EventBus
 from mini_claude.core.logging_setup import setup_logging
+from mini_claude.core.mcp.server import McpServerManager
 from mini_claude.core.runner import AgentRunner
 from mini_claude.core.runs import events_file, new_run_id
 from mini_claude.core.transport.ipc_broadcaster import IpcEventBroadcaster
@@ -60,6 +61,7 @@ class CoreApp:
         self._trace: TraceWriter | None = None
         self._sessions: SessionManager | None = None
         self._permission_manager: PermissionManager | None = None
+        self._mcp_manager: McpServerManager | None = None
 
     async def _ping_handler(self, params: dict[str, Any]) -> EventSubscribeResult:
         client = params.get("client", "unknown")
@@ -204,9 +206,21 @@ class CoreApp:
         sessions_root = Path("~/.mini/sessions").expanduser()
         store = SessionStore(sessions_root)
         compact_provider = AnthropicProvider(model=self._config.llm.default_model)
+
+        self._mcp_manager = McpServerManager()
+        if self._config.mcp.servers:
+            logger.info("mcp: starting %d server(s)", len(self._config.mcp.servers))
+            await self._mcp_manager.start_all(self._config.mcp.servers)
+
         self._sessions = SessionManager(
             store, 
-            runner_factory= lambda: AgentRunner(self._config, bus=self._bus, trace=self._trace, permission_manager=self._permission_manager),
+            runner_factory=lambda: AgentRunner(
+                self._config, 
+                bus=self._bus, 
+                trace=self._trace, 
+                permission_manager=self._permission_manager,
+                mcp_manager=self._mcp_manager
+            ),
             bus=self._bus,
             provider=compact_provider
         )
@@ -245,6 +259,8 @@ class CoreApp:
             run_task.cancel()
         if self._running_runs:
             await asyncio.gather(*self._running_runs, return_exceptions=True)
+        if self._mcp_manager is not None:
+            await self._mcp_manager.stop_all()
         await server.stop()
         if self._trace:
             await self._trace.stop()

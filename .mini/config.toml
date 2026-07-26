@@ -1,0 +1,16 @@
+[[mcp.servers]]
+name = "filesystem"
+transport = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+[[mcp.servers]]
+name = "internal-kb"
+transport = "tcp"
+host = "10.0.0.5"
+port = 3000
+
+[trace]
+enabled=true
+file = "~/.mini/traces/daemon.jsonl"
+include_llm_payload = true

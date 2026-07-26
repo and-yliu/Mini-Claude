@@ -29,11 +29,6 @@ dev = [
     "pytest-asyncio>=0.23", # Async unit test
 ]
 
-[trace]
-enable=true
-file = "~/.mini/traces/daemon.jsonl"
-include_llm_payload = true
-
 [tool.ruff]
 src = ["src"]
 line-length = 100

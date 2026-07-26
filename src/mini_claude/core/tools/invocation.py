@@ -21,7 +21,7 @@ from mini_claude.core.tools.registry import ToolRegistry
 from mini_claude.core.permissions.manager import PermissionManager
 from mini_claude.core.tools.errors import RateLimitedError
 
-_DEFAULT_TIMEOUT: float = 10.0
+_DEFAULT_TIMEOUT: float = 120.0
 _MAX_RETRIES: int = 2
 _RETRY_BASE_S: float = 2.0  # backoff base; tests can monkeypatch to 0
 _RETRYABLE: frozenset[str] = frozenset({"runtime_error", "rate_limited"})
