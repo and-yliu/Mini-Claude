@@ -9,12 +9,12 @@ from typing import Any
 from rich.markdown import Markdown
 from textual import events
 from textual.app import App, ComposeResult
-from textual.containers import VerticalScroll
 from textual.binding import Binding
-from textual.widgets import Label, Static, TextArea
-from textual.widget import Widget
-from textual.message import Message
+from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
+from textual.message import Message
+from textual.widget import Widget
+from textual.widgets import Label, Static, TextArea
 
 from mini_claude.core.config import ClaudeConfig
 from mini_claude.core.skills.loader import SkillLoader
@@ -23,12 +23,13 @@ from mini_claude.core.transport.socket_client import IpcError, SocketClient
 log = logging.getLogger(__name__)
 
 def _preview(s: str, n: int) -> str:
-    string = s.splitlines()[0]
-    return string[:n] + "…" if len(s) > n else string
+    first_line = s.splitlines()[0] if s else ""
+    return first_line[:n] + "…" if len(first_line) > n else first_line
 
 
 def _params_str(params: dict[str, Any]) -> str:
-    return json.dumps(params, ensure_ascii=False)
+    return json.dumps(params, ensure_ascii=False, indent=2)
+
 
 def _params_summary(tool_name: str, params: dict[str, Any], max_len: int = 72) -> str:
     keys_by_tool = {
@@ -40,7 +41,7 @@ def _params_summary(tool_name: str, params: dict[str, Any], max_len: int = 72) -
     }
 
     keys = keys_by_tool.get(tool_name, ())
-    parts = [f"{key}:{params[key]!r}" for key in keys if key in params]
+    parts = [f"{key}={params[key]!r}" for key in keys if key in params]
     if not parts:
         parts = [f"{key}={value!r}" for key, value in list(params.items())[:2]]
     return _preview(", ".join(parts), max_len)
@@ -54,7 +55,9 @@ class LLMStreamBlock(Static):
         self._text = ""
         self._finalized = False
     
-    def append_token(self, token: str):
+    def append_token(self, token: str) -> None:
+        if self._finalized:
+            return
         self._text += token
         self.update(self._text)
 
@@ -63,13 +66,14 @@ class LLMStreamBlock(Static):
             return
         self._finalized = True
         if self._text.strip():
-            self.update(Markdown(self._text))
+            self.update(Markdown(self._text, code_theme="monokai"))
 
 
 class ToolCallBlock(Widget):
     DEFAULT_CSS = """
-    ToolCallBlock { height: auto; padding: 0 0; }
-    ToolCallBlock > .detail { display: none; padding: 0 4; color: $text-muted; }
+    ToolCallBlock { height: auto; padding: 0 2; color: $text-muted; }
+    ToolCallBlock > .summary { color: $text-muted; }
+    ToolCallBlock > .detail { display: none; padding: 0 2 0 4; color: $text-muted; }
     ToolCallBlock.expanded > .detail { display: block; }
     """
 
@@ -82,23 +86,27 @@ class ToolCallBlock(Widget):
         self._elapsed_ms = 0
         self._is_error = False
         self._finished = False
+        self._retry_attempt = 0
     
     def compose(self) -> ComposeResult:
         yield Static(self._summary(), classes="summary")
         yield Static("", classes="detail")
 
     def _summary(self) -> str:
-        params_preview = _preview(self._params_full, 60)
-        icon = "[bold yellow]✎[/bold yellow]"
-        line = f"  {icon} [bold]{self._tool_name}[/bold]  [dim]{params_preview}[/dim]"
-        if self._finished:
-            out_pre = _preview(self._output, 50)
-            color = "red" if self._is_error else "dim"
-            hint = "  [dim]▸ click to expand[/dim]" if len(self._output) > 50 else ""
-            line += (
-                f"\n  [dim]↳[/dim] [{color}]{out_pre}[/{color}]"
-                f"  [dim]{self._elapsed_ms}ms[/dim]{hint}"
-            )
+        if self._tool_name == "note_save" and self._finished and not self._is_error:
+            return f"  [green]remembered[/green]  [dim]{self._elapsed_ms}ms[/dim]"
+
+        params_preview = _params_summary(self._tool_name, self._params)
+        line = f"  [dim]tool[/dim] [bold]{self._tool_name}[/bold]"
+        if params_preview:
+            line += f"  [dim]{params_preview}[/dim]"
+        if self._retry_attempt:
+            line += f"  [yellow]retrying ({self._retry_attempt}/2)[/yellow]"
+        elif self._finished:
+            color = "red" if self._is_error else "green"
+            status = "failed" if self._is_error else "done"
+            hint = "  [dim](click to expand)[/dim]" if self._output else ""
+            line += f"  [{color}]{status}[/{color}]  [dim]{self._elapsed_ms}ms[/dim]{hint}"
         return line
 
     def set_result(self, output: str, elapsed_ms: int, *, is_error: bool = False) -> None:
@@ -106,6 +114,14 @@ class ToolCallBlock(Widget):
         self._elapsed_ms = elapsed_ms
         self._is_error = is_error
         self._finished = True
+        self._retry_attempt = 0
+        if self.children:
+            self.query_one(".summary", Static).update(self._summary())
+
+    def set_retry(self, output: str, attempt: int) -> None:
+        self._output = output
+        self._retry_attempt = attempt
+        self._finished = False
         if self.children:
             self.query_one(".summary", Static).update(self._summary())
     
@@ -117,8 +133,8 @@ class ToolCallBlock(Widget):
         else:
             detail = self.query_one(".detail", Static)
             detail.update(
-                f"[dim]params:[/dim]\n    {self._params_full}\n"
-                f"[dim]output:[/dim]\n    {self._output}\n"
+                f"[dim]params[/dim]\n{self._params_full}\n\n"
+                f"[dim]output[/dim]\n{self._output}\n\n"
                 f"[dim]elapsed:[/dim] {self._elapsed_ms}ms"
             )
             self.add_class("expanded")
@@ -149,7 +165,7 @@ class PermissionSelect(Static):
 
     class Decided(Message):
         # initialize message, store widget, tool_use_id, and descision
-        def __init__(self, widget: "PermissionSelect", tool_use_id: str, decision: str) -> None:
+        def __init__(self, widget: PermissionSelect, tool_use_id: str, decision: str) -> None:
             self.widget = widget
             self.tool_use_id = tool_use_id
             self.decision = decision
@@ -179,7 +195,11 @@ class PermissionSelect(Static):
         )
 
     def on_focus(self, event: events.Focus) -> None:
-        log.debug("PermissionSelect.on_focus  has_focus=%s  app.focused=%r", self.has_focus, self.app.focused)
+        log.debug(
+            "PermissionSelect.on_focus  has_focus=%s  app.focused=%r",
+            self.has_focus,
+            self.app.focused,
+        )
 
     def on_blur(self, event: events.Blur) -> None:
         log.debug("PermissionSelect.on_blur  app.focused=%r", self.app.focused)
@@ -283,7 +303,7 @@ class SlashCompleteWidget(Static):
         self._filtered: list[tuple[str, str]] = list(items)
         self._cursor = 0
 
-    def set_query(self, query:str):
+    def set_query(self, query: str) -> None:
         q = query.lower()
         self._filtered = [(n, d) for n, d in self._all_items if not q or q in n.lower()]
         self._cursor = min(self._cursor, max(0, len(self._filtered) - 1))
@@ -356,7 +376,7 @@ class ChatTextArea(TextArea):
             self.query = query
             super().__init__()
 
-    def on_text_area_changed(self, event: TextArea.Changed):
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
         text = self.text
         if text.startswith("/") and " " not in text:
             self.post_message(ChatTextArea.SlashChanged(query=text[1:]))
@@ -364,7 +384,7 @@ class ChatTextArea(TextArea):
             self.post_message(ChatTextArea.SlashChanged(query=None))
             
     
-    async def _on_key(self, event: events.Key):
+    async def _on_key(self, event: events.Key) -> None:
         key = event.key
 
         popup: SlashCompleteWidget | None = None
@@ -383,7 +403,7 @@ class ChatTextArea(TextArea):
             if self.text.strip():
                 self.post_message(self.Submitted(self))
             return
-        if key in ("alt+enter", "shift+enter", "super+enter"):
+        if key in ("alt+enter", "shift+enter", "ctrl+j", "super+enter"):
             event.stop()
             event.prevent_default()
             if not self.read_only:
@@ -416,13 +436,13 @@ class ChatTextArea(TextArea):
 
 
 class MiniClaudeTuiApp(App[None]):
-    TITLE = "MiniClaude TUI"
+    TITLE = "MiniClaude"
     BINDINGS = [Binding("q", "quit", "Quit")]
     CSS = """
     Screen { background: $background; }
     #header {
         height: 1;
-        background: $primary;
+        background: $surface;
         color: $text;
         padding: 0 1;
     }
@@ -431,6 +451,7 @@ class MiniClaudeTuiApp(App[None]):
         scrollbar-size-vertical: 1;
         scrollbar-size-horizontal: 1;
     }
+    #banner { padding: 1 2 0 2; }
     Static.user-turn { color: $text; padding: 1 2 0 2; }
     Static.run-header { color: $text-muted; padding: 1 2 0 2; }
     Static.step-divider { color: $text-muted; padding: 0 2; }
@@ -440,6 +461,15 @@ class MiniClaudeTuiApp(App[None]):
     Static.log-line { padding: 0 2; }
     """
 
+    _BANNER = (
+        "[bold cyan]███╗   ███╗██╗███╗   ██╗██╗       ██████╗██╗      █████╗ ██╗   ██╗██████╗ ███████╗[/bold cyan]\n"
+        "[bold cyan]████╗ ████║██║████╗  ██║██║      ██╔════╝██║     ██╔══██╗██║   ██║██╔══██╗██╔════╝[/bold cyan]\n"
+        "[bold cyan]██╔████╔██║██║██╔██╗ ██║██║█████╗██║     ██║     ███████║██║   ██║██║  ██║█████╗  [/bold cyan]\n"
+        "[bold cyan]██║╚██╔╝██║██║██║╚██╗██║██║╚════╝██║     ██║     ██╔══██║██║   ██║██║  ██║██╔══╝  [/bold cyan]\n"
+        "[bold cyan]██║ ╚═╝ ██║██║██║ ╚████║██║      ╚██████╗███████╗██║  ██║╚██████╔╝██████╔╝███████╗[/bold cyan]\n"
+        "[bold cyan]╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝╚═╝       ╚═════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚══════╝[/bold cyan]\n"
+        "[dim]  Type a message to begin  ·  Type / for skills  ·  Ctrl+Q to quit[/dim]"
+    )
 
     # init connection parameters and token buffer
     def __init__(self, host: str, port: int, replay_run_id: str | None = None) -> None:
@@ -453,7 +483,7 @@ class MiniClaudeTuiApp(App[None]):
         self._pending_permission_blocks: dict[str, PermissionBlock] = {}
         self._session_id: str | None = None
         self._busy = False
-        self._last_context_pct: float = 0
+        self._last_context_pct: float = 0.0
         self._slash_items: list[tuple[str, str]] = []
         self._subagent_run_ids: dict[str, str] = {}  # child run_id -> description
         self._subagent_start_times: dict[str, float] = {}  # child run_id -> start time
@@ -468,12 +498,13 @@ class MiniClaudeTuiApp(App[None]):
     # run on application start
     def on_mount(self) -> None:
         self._slash_items = self._build_slash_items()
+        self._append(Static(self._BANNER, id="banner"))
         self.run_worker(self._socket_loop(), exclusive=True, name="socket")
         prompt = self.query_one("#prompt", ChatTextArea)
         prompt.disabled = True
         prompt.border_title = "connecting..."
 
-    def _build_slash_items(self):
+    def _build_slash_items(self) -> list[tuple[str, str]]:
         items: list[tuple[str, str]] = [("compact", "compress context window")]
         try:
             loader = SkillLoader()
@@ -486,7 +517,7 @@ class MiniClaudeTuiApp(App[None]):
             pass
         return items
 
-    def _on_key(self, event):
+    def on_key(self, event: events.Key) -> None:
         log.debug("App.on_key  key=%r  focused=%r", event.key, self.focused)
         if not self._pending_permission_blocks:
             return
@@ -555,7 +586,7 @@ class MiniClaudeTuiApp(App[None]):
                 self._append(Static("[yellow]warning: failed to close session[/yellow]"))
         self.exit()
 
-    async def on_chat_text_area_slash_changed(self, event: ChatTextArea.SlashChanged) -> None:
+    def on_chat_text_area_slash_changed(self, event: ChatTextArea.SlashChanged) -> None:
         query = event.query
         if query is None:
             try:
@@ -571,7 +602,7 @@ class MiniClaudeTuiApp(App[None]):
             self.mount(popup, before="#prompt")
             popup.set_query(query)
 
-    async def on_slash_complete_widget_selected(self, event: SlashCompleteWidget.Selected) -> None:
+    def on_slash_complete_widget_selected(self, event: SlashCompleteWidget.Selected) -> None:
         prompt = self._prompt()
         if prompt is not None:
             prompt.text = f"/{event.skill_name} "
@@ -615,7 +646,7 @@ class MiniClaudeTuiApp(App[None]):
         self._update_header("running")
         self.run_worker(self._send_message(content), name="send_message", exclusive=False)
 
-    async def _send_message(self, content: str):
+    async def _send_message(self, content: str) -> None:
         if self._client is None:
             return
         try:
@@ -626,11 +657,16 @@ class MiniClaudeTuiApp(App[None]):
                     "content": content
                 }
             )
-        except IpcError as e:
+        except (IpcError, RuntimeError, OSError) as e:
             self._busy = False
             prompt = self._prompt()
-            prompt.disabled = False
-            prompt.border_title = "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
+            if prompt is not None:
+                prompt.disabled = False
+                prompt.read_only = False
+                prompt.border_title = (
+                    "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
+                )
+                prompt.focus()
             self._update_header("ready")
             self._append(Static(f"[red]send error: {e}[/red]", classes="log-line"))
         
@@ -711,6 +747,27 @@ class MiniClaudeTuiApp(App[None]):
             f"{session}  [{color}]{state}[/{color}]"
         )
 
+    def _subscription_params(self) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "topics": [
+                "session.*",
+                "run.*",
+                "step.*",
+                "tool.*",
+                "llm.token",
+                "llm.usage",
+                "log.*",
+                "permission.*",
+                "context.*",
+                "subagent.*",
+                "skill.*",
+            ],
+            "scope": "global",
+        }
+        if self._replay_run_id is not None:
+            params["replay_from_run"] = self._replay_run_id
+        return params
+
     async def _socket_loop(self) -> None:
         header = self.query_one("#header", Label)
 
@@ -730,7 +787,7 @@ class MiniClaudeTuiApp(App[None]):
             self._update_header("connecting")
             loop_task = asyncio.create_task(client.run_event_loop())
 
-            async def on_event(event: dict[str, Any]):
+            async def on_event(event: dict[str, Any]) -> None:
                 self._handle_event(event)
             
             client.on_event(on_event)
@@ -742,20 +799,10 @@ class MiniClaudeTuiApp(App[None]):
                     else None
                 )
 
-                params: dict[str, Any] = {
-                    "topics": [
-                        "session.*", "run.*", "step.*",
-                        "tool.*", "llm.token", "llm.usage",
-                        "log.*", "permission.*", "context.*",
-                        "subagent.*", "skill.*",
-                    ],
-                    "scope": "global",
-                }
-                if self._replay_run_id is not None:
-                    params["replay_run_id"] = self._replay_run_id
-                await client.send_command("event.subscribe", params)
+                await client.send_command("event.subscribe", self._subscription_params())
                 created = await client.send_command("session.create", {"mode": "chat"})
                 self._session_id = str(created["session_id"])
+                log.info("session created session_id=%s", self._session_id)
                 prompt = self._prompt()
                 if prompt is not None:
                     prompt.disabled = False
@@ -788,7 +835,7 @@ class MiniClaudeTuiApp(App[None]):
         except Exception:
             log.exception("_handle_event crashed  event_type=%s", event.get("type", "?"))
 
-    def _handle_event_inner(self, event: dict[str, Any]):
+    def _handle_event_inner(self, event: dict[str, Any]) -> None:
         t = event.get("type", "")
 
         if t == "llm.token":
@@ -830,9 +877,12 @@ class MiniClaudeTuiApp(App[None]):
             ))
 
         elif t == "step.started":
+            run_id = str(event.get("run_id", ""))
+            if run_id in self._subagent_run_ids:
+                return
             step = event.get("step", "")
             self._append(Static(
-                f"[dim]── step {step} {'─' * 48}[/dim]",
+                f"[dim]step {step}[/dim]",
                 classes="step-divider",
             ))
 
@@ -840,7 +890,10 @@ class MiniClaudeTuiApp(App[None]):
             tool_use_id = str(event.get("tool_use_id", ""))
             tool_name = str(event.get("tool_name", ""))
             params = event.get("params") or {}
+            run_id = str(event.get("run_id", ""))
             tc_block = ToolCallBlock(tool_name, params)
+            if run_id in self._subagent_run_ids:
+                tc_block.styles.padding = (0, 2, 0, 6)
             self._pending_tool_blocks[tool_use_id] = tc_block
             self._append(tc_block)
 
@@ -856,9 +909,15 @@ class MiniClaudeTuiApp(App[None]):
             tool_use_id = str(event.get("tool_use_id", ""))
             elapsed_ms = int(event.get("elapsed_ms") or 0)
             error_message = str(event.get("error_message") or "")
+            error_type = str(event.get("error_type") or "")
+            attempt = int(event.get("attempt") or 1)
             if tool_use_id in self._pending_tool_blocks:
-                tc_done = self._pending_tool_blocks.pop(tool_use_id)
-                tc_done.set_result(error_message, elapsed_ms, is_error=True)
+                tc_block = self._pending_tool_blocks[tool_use_id]
+                if error_type in {"runtime_error", "rate_limited"} and attempt <= 2:
+                    tc_block.set_retry(error_message, attempt)
+                else:
+                    self._pending_tool_blocks.pop(tool_use_id)
+                    tc_block.set_result(error_message, elapsed_ms, is_error=True)
 
         elif t == "run.finished":
             status = event.get("status", "")
@@ -877,7 +936,10 @@ class MiniClaudeTuiApp(App[None]):
                 ))
 
         elif t == "llm.usage":
-            pct = event.get('context_pct')
+            run_id = str(event.get("run_id", ""))
+            if run_id in self._subagent_run_ids:
+                return
+            pct = float(event.get("context_pct") or 0.0)
             self._last_context_pct = pct
             ctx_bar = self._render_ctx_bar(pct)
             self._append(Static(
@@ -921,16 +983,18 @@ class MiniClaudeTuiApp(App[None]):
             self._append(perm_block)
             select = PermissionSelect(tool_use_id)
             self._mount_permission_select(select)
-            log.debug("PermissionSelect mounted before #prompt  pending=%d", len(self._pending_permission_blocks))
+            log.debug(
+                "PermissionSelect mounted before #prompt  pending=%d",
+                len(self._pending_permission_blocks),
+            )
 
         elif t == "permission.denied":
             tool_use_id = str(event.get("tool_use_id", ""))
             decision = str(event.get("decision", "denied"))
 
             if tool_use_id in self._pending_permission_blocks:
-                perm_block = self._pending_permission_blocks.pop(tool_use_id, None)
-                if perm_block is not None:
-                    perm_block._resolve(decision)
+                perm_block = self._pending_permission_blocks.pop(tool_use_id)
+                perm_block._resolve(decision)
                 try:
                     select = self.query_one(PermissionSelect)
                     select.remove()

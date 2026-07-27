@@ -13,19 +13,19 @@ def _now() -> str:
 
 class TaskManager:
     # make sure tasks_dir exist, and the next id based on current tasks
-    def __init__(self, tasks_dir: Path):
+    def __init__(self, tasks_dir: Path) -> None:
         self._dir = tasks_dir
         self._dir.mkdir(parents=True, exist_ok=True)
         self._next_id = self._max_id() + 1
 
     # return the max current id
     def _max_id(self) -> int:
-        ids = []
+        ids: list[int] = []
         for file in self._dir.glob("task_*.json"):
-            task_id = file.stem().split("_")[1]
+            task_id = file.stem.split("_")[1]
             if task_id.isdigit():
-                ids.append(task_id)
-        
+                ids.append(int(task_id))
+
         return max(ids) if ids else 0
     
     # load task from file
@@ -41,19 +41,26 @@ class TaskManager:
         path.write_text(json.dumps(task.to_dict(), indent=2, ensure_ascii=False))
 
     # create task and save to json file and return task object
-    def create(self, subject: str, description: str = "", blocked_by: list[int] | None = None) -> Task:
-        for dep_id in blocked_by:
+    def create(
+        self,
+        subject: str,
+        description: str = "",
+        blocked_by: list[int] | None = None,
+    ) -> Task:
+        dependencies = list(blocked_by or [])
+        for dep_id in dependencies:
             if not (self._dir / f"task_{dep_id}.json").exists():
                 raise ValueError(f"blocked_by task {dep_id} not found")
-        
+
         now = _now()
         task = Task(
             id=self._next_id,
             subject=subject,
             description=description,
             status="pending",
+            blocked_by=dependencies,
             created_at=now,
-            updated_at=now
+            updated_at=now,
         )
 
         self._save(task)
@@ -101,19 +108,18 @@ class TaskManager:
         return tasks
     
     # clear dependency after a task is done
-    def _clear_dependency(self, task_id: str) -> None:
+    def _clear_dependency(self, task_id: int) -> None:
         for f in self._dir.glob("task_*.json"):
             try:
                 task = json.loads(f.read_text())
             except (ValueError, json.JSONDecodeError):
-                pass
-            
+                continue
+
             blocked_by = [int(x) for x in task.get("blocked_by", [])]
             if task_id in blocked_by:
                 task["blocked_by"] = [x for x in blocked_by if x != task_id]
                 task["updated_at"] = _now()
-            
-            f.write_text(json.dumps(task, indent=2, ensure_ascii=False))
+                f.write_text(json.dumps(task, indent=2, ensure_ascii=False))
 
     # format list to agent     
     def format_list(self) -> str:
@@ -128,4 +134,3 @@ class TaskManager:
         return "\n".join(lines)
 
     
-
