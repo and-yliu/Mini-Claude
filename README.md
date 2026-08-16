@@ -1,5 +1,7 @@
 # Mini-Claude
 
+![The Mini-Claude TUI answering a question about its own source](assets/screenshot.png)
+
 Mini-Claude is a small local coding-agent runtime built with Python, Anthropic Claude,
 and Textual. It separates the agent core from its terminal clients, so a CLI or TUI can
 connect to the same long-running daemon and observe work through a shared event stream.
